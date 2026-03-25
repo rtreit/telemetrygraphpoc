@@ -1,0 +1,10 @@
+{
+  "hooks": {
+    "sessionStart": [
+      {
+        "script": ".github/hooks/scripts/session-start.ps1",
+        "description": "Verifies the development environment is ready (Python, Node.js, dependencies)."
+      }
+    ]
+  }
+}
