@@ -88,6 +88,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           return NODE_TYPE_CONFIG[node.type]?.size || 3;
         })
         .nodeOpacity(0.9)
+        .linkOpacity(1.0)
         .linkColor((link: any) => {
           const hl = highlightEdgesRef.current;
           if (hl && hl.size > 0) {
@@ -96,9 +97,9 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
             if (hl.has(key) || hl.has(reverseKey)) {
               return 'rgba(255,255,255,0.6)';
             }
-            return 'rgba(255,255,255,0.03)';
+            return 'rgba(255,255,255,0.08)';
           }
-          return 'rgba(255,255,255,0.12)';
+          return 'rgba(255,255,255,0.35)';
         })
         .linkWidth((link: any) => {
           const hl = highlightEdgesRef.current;
@@ -107,7 +108,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
             const reverseKey = `${typeof link.target === 'object' ? link.target.id : link.target}->${typeof link.source === 'object' ? link.source.id : link.source}`;
             if (hl.has(key) || hl.has(reverseKey)) return 1.5;
           }
-          return 0.3;
+          return 0.8;
         })
         .linkDirectionalParticles((link: any) => {
           const hl = highlightEdgesRef.current;
