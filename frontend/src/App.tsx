@@ -17,6 +17,7 @@ function App() {
   const [generating, setGenerating] = useState(false);
   const [nodeCount, setNodeCount] = useState(100);
   const [labelTypes, setLabelTypes] = useState<Set<string>>(new Set(['tenant']));
+  const [hopCount, setHopCount] = useState(1);
   const graphRef = useRef<Graph3DHandle>(null);
 
   const handleGenerate = useCallback(async () => {
@@ -47,12 +48,23 @@ function App() {
 
   const highlightNodes = useMemo(() => {
     if (selectedNode && data) {
-      // Selection takes priority
+      // Multi-hop BFS from selected node
       const connected = new Set<string>([selectedNode.id]);
-      data.edges.forEach(e => {
-        if (e.source === selectedNode.id) connected.add(e.target);
-        if (e.target === selectedNode.id) connected.add(e.source);
-      });
+      let frontier = new Set<string>([selectedNode.id]);
+      for (let hop = 0; hop < hopCount; hop++) {
+        const nextFrontier = new Set<string>();
+        data.edges.forEach(e => {
+          if (frontier.has(e.source) && !connected.has(e.target)) {
+            nextFrontier.add(e.target);
+            connected.add(e.target);
+          }
+          if (frontier.has(e.target) && !connected.has(e.source)) {
+            nextFrontier.add(e.source);
+            connected.add(e.source);
+          }
+        });
+        frontier = nextFrontier;
+      }
       return connected;
     }
     if (highlightEU && data) {
@@ -66,18 +78,19 @@ function App() {
       );
     }
     return new Set<string>();
-  }, [selectedNode, data, highlightEU]);
+  }, [selectedNode, data, highlightEU, hopCount]);
 
   const highlightEdges = useMemo(() => {
     if (!selectedNode || !data) return new Set<string>();
     const edgeKeys = new Set<string>();
+    // Highlight edges where BOTH endpoints are in the highlighted neighborhood
     data.edges.forEach(e => {
-      if (e.source === selectedNode.id || e.target === selectedNode.id) {
+      if (highlightNodes.has(e.source) && highlightNodes.has(e.target)) {
         edgeKeys.add(`${e.source}->${e.target}`);
       }
     });
     return edgeKeys;
-  }, [selectedNode, data]);
+  }, [selectedNode, data, highlightNodes]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
     setSelectedNode(prev => prev?.id === node.id ? null : node);
@@ -191,9 +204,25 @@ function App() {
             >
               🇪🇺 EU
             </button>
-            <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm">
-              <span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}
-              <span className="text-gray-400 ml-3">Edges:</span> {data?.edges.length ?? 0}
+            <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm flex items-center gap-3">
+              <span><span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}</span>
+              <span><span className="text-gray-400">Edges:</span> {data?.edges.length ?? 0}</span>
+              <span className="border-l border-gray-700 pl-3 flex items-center gap-1">
+                <span className="text-gray-400">Hops:</span>
+                {[1,2,3,4].map(h => (
+                  <button
+                    key={h}
+                    onClick={() => setHopCount(h)}
+                    className={`w-6 h-6 rounded text-xs font-mono transition ${
+                      hopCount === h
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-500 hover:text-gray-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {h}
+                  </button>
+                ))}
+              </span>
             </div>
             <Legend labelTypes={labelTypes} onToggleLabelType={handleToggleLabelType} />
           </div>

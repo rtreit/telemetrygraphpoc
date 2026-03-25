@@ -174,11 +174,12 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           const lt = labelTypesRef.current;
           if (!lt || !lt.has(node.type)) return null as any;
 
-          const sprite = new SpriteText(node.label, 3, '#ffffff');
-          sprite.backgroundColor = 'rgba(0,0,0,0.5)';
-          sprite.padding = 1;
+          const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
+          const sprite = new SpriteText(node.label, 2.5, '#ffffff');
+          sprite.backgroundColor = 'rgba(0,0,0,0.6)';
+          sprite.padding = 1.5;
           sprite.borderRadius = 2;
-          sprite.position.y = 8;
+          sprite.position.y = nodeSize + 6;
           return sprite;
         })
         .linkPositionUpdate((sprite: any, { start, end }: any) => {
