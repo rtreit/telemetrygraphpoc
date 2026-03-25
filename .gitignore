@@ -80,7 +80,8 @@ frontend/build/
 *.tsbuildinfo
 
 # Generated data (large files — regenerate with seed)
-data/
+data/raw/
+data/graph/
 *.parquet
 generated_telemetry/
 graph_output/
