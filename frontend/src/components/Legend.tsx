@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { NODE_TYPE_CONFIG } from '../config';
 
 export function Legend() {
-  const [isOpen, setIsOpen] = useState(false);
+  const [isOpen, setIsOpen] = useState(true);
   
   return (
     <div className="bg-black/60 backdrop-blur-sm rounded-lg">

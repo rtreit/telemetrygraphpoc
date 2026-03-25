@@ -386,11 +386,13 @@ class TelemetryGenerator:
             hostname = f"{key}-{host_counter[key]:04d}"
 
             device_id = f"dev-{uuid.UUID(int=self.rng.getrandbits(128), version=4)}"
+            machine_guid = str(uuid.UUID(int=self.rng.getrandbits(128), version=4))
             user = self.fake.user_name()
             posture = self.rng.choice(SECURITY_POSTURE_OPTIONS)
 
             self.hosts.append(Host(
                 device_id=device_id,
+                machine_guid=machine_guid,
                 hostname=hostname,
                 os_family=os_family,
                 device_type=dev_type,
@@ -527,6 +529,7 @@ class TelemetryGenerator:
                 delivery_time=delivery,
                 recipient_user=host.user,
                 recipient_tenant=host.tenant_id,
+                country=host.country,
                 spf=spf,
                 dkim=dkim,
                 dmarc=dmarc,
@@ -665,6 +668,7 @@ class TelemetryGenerator:
             self.executions.append(ExecutionEvent(
                 event_id=eid,
                 host_device_id=host.device_id,
+                country=host.country,
                 file_sha256=self.seed_ioc,
                 process_name=proc,
                 persistence_type=persist,

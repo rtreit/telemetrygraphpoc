@@ -17,9 +17,13 @@ export const NODE_TYPE_CONFIG: Record<string, { color: string; shape: string; si
   domain:   { color: '#00ccaa', shape: 'sphere', size: 6 },
   ip:       { color: '#aa44ff', shape: 'sphere', size: 5 },
   user:     { color: '#44aaff', shape: 'sphere', size: 3 },
-  country:  { color: '#ffcc00', shape: 'sphere', size: 8 },
   tenant:   { color: '#ff6600', shape: 'sphere', size: 7 },
-  campaign: { color: '#ff0066', shape: 'sphere', size: 9 },
   url:      { color: '#00aacc', shape: 'sphere', size: 3 },
   process:  { color: '#cc4400', shape: 'sphere', size: 3 },
 };
+
+export const EU_COUNTRIES = new Set([
+  'AT', 'BE', 'BG', 'HR', 'CY', 'CZ', 'DK', 'EE', 'FI', 'FR',
+  'DE', 'GR', 'HU', 'IE', 'IT', 'LV', 'LT', 'LU', 'MT', 'NL',
+  'PL', 'PT', 'RO', 'SK', 'SI', 'ES', 'SE',
+]);

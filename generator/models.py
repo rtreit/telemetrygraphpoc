@@ -21,6 +21,7 @@ class MalwareFile(BaseModel):
 
 class Host(BaseModel):
     device_id: str
+    machine_guid: str
     hostname: str
     os_family: str  # "Windows", "Linux", "macOS"
     device_type: str  # "server", "desktop", "laptop", "VM"
@@ -42,6 +43,7 @@ class Email(BaseModel):
     delivery_time: datetime
     recipient_user: str
     recipient_tenant: str
+    country: str  # country of the recipient host
     spf: str  # "pass", "fail", "none"
     dkim: str
     dmarc: str
@@ -64,6 +66,7 @@ class NetworkInfra(BaseModel):
 class ExecutionEvent(BaseModel):
     event_id: str
     host_device_id: str
+    country: str  # country of the host where execution happened
     file_sha256: str
     process_name: str
     persistence_type: Optional[str] = None  # "registry_run_key", "scheduled_task", "cron", "startup_folder"

@@ -1,7 +1,8 @@
 import ForceGraph3D from '3d-force-graph';
 import type { ForceGraph3DInstance } from '3d-force-graph';
+import SpriteText from 'three-spritetext';
 import { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { COUNTRY_COLORS, DEFAULT_COUNTRY_COLOR, NODE_TYPE_CONFIG } from '../config';
+import { COUNTRY_COLORS, NODE_TYPE_CONFIG } from '../config';
 import type { GraphNode, GraphEdge } from '../types';
 
 interface Graph3DProps {
@@ -62,8 +63,24 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         .backgroundColor('#0a0a0f')
         .nodeLabel((obj) => {
           const node = obj as unknown as GraphNodeObject;
-          return `<div style="color:#fff;background:rgba(0,0,0,0.8);padding:4px 8px;border-radius:4px;font-size:12px;">
-            <b>${node.label}</b><br/><span style="color:#999">${node.type}</span>
+          const cc = (node.properties?.country_code || node.properties?.country || '') as string;
+
+          let details = '';
+          if (node.type === 'file') {
+            const names = node.properties?.file_names;
+            const paths = node.properties?.file_paths;
+            if (Array.isArray(names) && names.length > 0) {
+              details += `<br/><span style="color:#ccc">File: ${names[0]}</span>`;
+            }
+            if (Array.isArray(paths) && paths.length > 0) {
+              details += `<br/><span style="color:#999;font-size:11px">${paths[0]}</span>`;
+            }
+          }
+
+          return `<div style="color:#fff;background:rgba(0,0,0,0.85);padding:6px 10px;border-radius:6px;font-size:12px;max-width:400px;">
+            <b>${node.label}</b>
+            <br/><span style="color:#999">${node.type}</span>${cc ? ` · <span style="color:#aaa">${cc}</span>` : ''}
+            ${details}
           </div>`;
         })
         .nodeColor((obj) => {
@@ -75,8 +92,10 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           if (node.id === selectedNodeIdRef.current) {
             return '#ffffff';
           }
-          if (node.type === 'host' && node.properties?.country) {
-            return COUNTRY_COLORS[node.properties.country as string] || DEFAULT_COUNTRY_COLOR;
+          // Color by country_code (all nodes have this now)
+          const countryCode = (node.properties?.country_code || node.properties?.country) as string;
+          if (countryCode && COUNTRY_COLORS[countryCode]) {
+            return COUNTRY_COLORS[countryCode];
           }
           return NODE_TYPE_CONFIG[node.type]?.color || '#888888';
         })
@@ -120,6 +139,32 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           return 0;
         })
         .linkDirectionalParticleWidth(1.2)
+        .linkThreeObjectExtend(true)
+        .linkThreeObject((link: any) => {
+          const hl = highlightEdgesRef.current;
+          if (!hl || hl.size === 0) return null as any;
+          const srcId = typeof link.source === 'object' ? link.source.id : link.source;
+          const tgtId = typeof link.target === 'object' ? link.target.id : link.target;
+          const key = `${srcId}->${tgtId}`;
+          const reverseKey = `${tgtId}->${srcId}`;
+          if (!hl.has(key) && !hl.has(reverseKey)) return null as any;
+
+          const sprite = new SpriteText(link.type || '', 2.5, 'rgba(255,255,255,0.8)');
+          sprite.backgroundColor = 'rgba(0,0,0,0.6)';
+          sprite.padding = 1.5;
+          sprite.borderRadius = 2;
+          return sprite;
+        })
+        .linkPositionUpdate((sprite: any, { start, end }: any) => {
+          if (!sprite || !start || !end) return false;
+          const mid = {
+            x: (start.x + end.x) / 2,
+            y: (start.y + end.y) / 2,
+            z: (start.z + end.z) / 2,
+          };
+          Object.assign(sprite.position, mid);
+          return true;
+        })
         .onNodeClick((obj) => {
           if (onNodeClick) onNodeClick(obj as unknown as GraphNode);
         })
@@ -158,6 +203,8 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         graphRef.current.linkColor(graphRef.current.linkColor());
         graphRef.current.linkWidth(graphRef.current.linkWidth());
         graphRef.current.linkDirectionalParticles(graphRef.current.linkDirectionalParticles());
+        // Re-evaluate edge labels when selection changes
+        graphRef.current.linkThreeObject(graphRef.current.linkThreeObject());
       }
     }, [highlightNodes, highlightEdges, selectedNodeId]);
 

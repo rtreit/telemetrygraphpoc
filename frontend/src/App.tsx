@@ -5,6 +5,7 @@ import { FilterPanel } from './components/FilterPanel';
 import { SearchBar } from './components/SearchBar';
 import { Legend } from './components/Legend';
 import { useGraphData } from './hooks/useGraphData';
+import { EU_COUNTRIES } from './config';
 import type { GraphNode } from './types';
 
 function App() {
@@ -12,6 +13,7 @@ function App() {
   const { data, loading, error } = useGraphData(filters);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [highlightEU, setHighlightEU] = useState(false);
   const graphRef = useRef<Graph3DHandle>(null);
 
   const connectedEdges = useMemo(() => {
@@ -22,14 +24,27 @@ function App() {
   }, [selectedNode, data]);
 
   const highlightNodes = useMemo(() => {
-    if (!selectedNode || !data) return new Set<string>();
-    const connected = new Set<string>([selectedNode.id]);
-    data.edges.forEach(e => {
-      if (e.source === selectedNode.id) connected.add(e.target);
-      if (e.target === selectedNode.id) connected.add(e.source);
-    });
-    return connected;
-  }, [selectedNode, data]);
+    if (selectedNode && data) {
+      // Selection takes priority
+      const connected = new Set<string>([selectedNode.id]);
+      data.edges.forEach(e => {
+        if (e.source === selectedNode.id) connected.add(e.target);
+        if (e.target === selectedNode.id) connected.add(e.source);
+      });
+      return connected;
+    }
+    if (highlightEU && data) {
+      return new Set(
+        data.nodes
+          .filter(n => {
+            const cc = (n.properties?.country_code || n.properties?.country) as string;
+            return cc && EU_COUNTRIES.has(cc);
+          })
+          .map(n => n.id)
+      );
+    }
+    return new Set<string>();
+  }, [selectedNode, data, highlightEU]);
 
   const highlightEdges = useMemo(() => {
     if (!selectedNode || !data) return new Set<string>();
@@ -119,6 +134,16 @@ function App() {
               }`}
             >
               ☰ Filters
+            </button>
+            <button
+              onClick={() => setHighlightEU(!highlightEU)}
+              className={`px-3 py-1.5 rounded-lg text-sm transition ${
+                highlightEU 
+                  ? 'bg-blue-600 text-white' 
+                  : 'bg-black/60 backdrop-blur-sm text-gray-300 hover:text-white'
+              }`}
+            >
+              🇪🇺 EU
             </button>
             <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm">
               <span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}

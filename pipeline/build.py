@@ -7,7 +7,7 @@ Usage:
 
 import json
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -57,6 +57,38 @@ def build_nodes(raw: dict) -> dict[str, dict]:
     """Build a deduplicated node dict keyed by node id."""
     nodes: dict[str, dict] = {}
 
+    # --- lookup tables for country propagation ---
+    host_by_id = {h["device_id"]: h for h in raw["hosts"]}
+
+    # file sha → list of countries (from executions linking files to hosts)
+    file_host_countries: dict[str, list[str]] = defaultdict(list)
+    for ex in raw["executions"]:
+        sha = ex.get("file_sha256")
+        hid = ex.get("host_device_id")
+        if sha and hid:
+            host = host_by_id.get(hid)
+            country = ex.get("country") or (host.get("country") if host else None)
+            if country:
+                file_host_countries[sha].append(country)
+
+    # domain → list of countries (from network infra ip_country)
+    domain_countries: dict[str, list[str]] = defaultdict(list)
+    for n in raw["network"]:
+        d = n.get("domain")
+        c = n.get("ip_country")
+        if d and c:
+            domain_countries[d].append(c)
+
+    # user (tid/user) → list of countries (from hosts)
+    user_countries: dict[str, list[str]] = defaultdict(list)
+    for h in raw["hosts"]:
+        user = h.get("user")
+        tid = h.get("tenant_id")
+        c = h.get("country")
+        if user and tid and c:
+            uid = f"{tid}/{user}"
+            user_countries[uid].append(c)
+
     # --- seed IOC (ensure it exists as a file node even if files.json is empty) ---
     seed = raw["seed_ioc"]
     # Will be overwritten / merged by the files loop below.
@@ -91,6 +123,9 @@ def build_nodes(raw: dict) -> dict[str, dict]:
 
     for sha, agg in file_agg.items():
         label = agg["file_names"][0] if agg["file_names"] else sha[:16]
+        _fc = file_host_countries.get(sha, [])
+        countries_for_file = sorted(set(_fc))
+        file_cc = Counter(_fc).most_common(1)[0][0] if _fc else "unknown"
         nodes[sha] = _node(sha, "file", label, {
             "sha256": sha,
             "file_names": agg["file_names"],
@@ -102,13 +137,23 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "last_seen": agg["last_seen"],
             "parent_processes": agg["parent_processes"],
             "dropped_by": sorted(agg["dropped_by"]),
+            "countries": countries_for_file,
+            "country_code": file_cc,
         })
 
     # Ensure seed IOC is present even if not in files.json
     if seed["sha256"] not in nodes:
+        _fc = file_host_countries.get(seed["sha256"], [])
+        _seed_countries = sorted(set(_fc))
+        _seed_cc = Counter(_fc).most_common(1)[0][0] if _fc else "unknown"
         nodes[seed["sha256"]] = _node(
             seed["sha256"], "file", seed["sha256"][:16],
-            {"sha256": seed["sha256"], "description": seed["description"]},
+            {
+                "sha256": seed["sha256"],
+                "description": seed["description"],
+                "countries": _seed_countries,
+                "country_code": _seed_cc,
+            },
         )
 
     # --- host nodes ---
@@ -121,14 +166,19 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "device_type": h.get("device_type"),
             "environment": h.get("environment"),
             "country": h.get("country"),
+            "country_code": h.get("country"),
             "tenant_id": h.get("tenant_id"),
             "user": h.get("user"),
             "security_posture": h.get("security_posture"),
+            "machine_guid": h.get("machine_guid"),
         })
 
     # --- email nodes ---
+    # Build campaign lookup for enriching emails
+    campaign_lookup = {c["cluster_id"]: c for c in raw.get("campaigns", [])}
     for e in raw["emails"]:
         nid = e["message_id"]
+        campaign_info = campaign_lookup.get(e.get("campaign_id", ""), {})
         nodes[nid] = _node(nid, "email", _trunc(e["subject"], 50), {
             "message_id": nid,
             "sender": e.get("sender"),
@@ -144,6 +194,9 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "dkim": e.get("dkim"),
             "dmarc": e.get("dmarc"),
             "campaign_id": e.get("campaign_id"),
+            "campaign_lure": campaign_info.get("lure_family"),
+            "campaign_region": campaign_info.get("region_variant"),
+            "country_code": e.get("country", "unknown"),
         })
 
     # --- domain nodes (from network data) ---
@@ -156,23 +209,48 @@ def build_nodes(raw: dict) -> dict[str, dict]:
         if d not in domain_first_seen or (fs and (domain_first_seen[d] is None or fs < domain_first_seen[d])):
             domain_first_seen[d] = fs
         if d not in nodes:
-            nodes[d] = _node(d, "domain", d, {"first_seen": fs})
+            _dc = domain_countries.get(d, [])
+            _dc_sorted = sorted(set(_dc))
+            _dc_cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+            nodes[d] = _node(d, "domain", d, {
+                "first_seen": fs,
+                "countries": _dc_sorted,
+                "country_code": _dc_cc,
+            })
 
     # Also create domain nodes from email sender_domains and campaign sender_domains
     for e in raw["emails"]:
         sd = e.get("sender_domain")
         if sd and sd not in nodes:
-            nodes[sd] = _node(sd, "domain", sd, {})
+            _dc = domain_countries.get(sd, [])
+            _dc_sorted = sorted(set(_dc))
+            _dc_cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+            nodes[sd] = _node(sd, "domain", sd, {
+                "countries": _dc_sorted,
+                "country_code": _dc_cc,
+            })
     for c in raw["campaigns"]:
         for sd in c.get("sender_domains", []):
             if sd not in nodes:
-                nodes[sd] = _node(sd, "domain", sd, {})
+                _dc = domain_countries.get(sd, [])
+                _dc_sorted = sorted(set(_dc))
+                _dc_cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+                nodes[sd] = _node(sd, "domain", sd, {
+                    "countries": _dc_sorted,
+                    "country_code": _dc_cc,
+                })
 
     # domains from execution external_connection
     for ex in raw["executions"]:
         ec = ex.get("external_connection")
         if ec and ec not in nodes:
-            nodes[ec] = _node(ec, "domain", ec, {})
+            _dc = domain_countries.get(ec, [])
+            _dc_sorted = sorted(set(_dc))
+            _dc_cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+            nodes[ec] = _node(ec, "domain", ec, {
+                "countries": _dc_sorted,
+                "country_code": _dc_cc,
+            })
 
     # --- ip nodes ---
     seen_ips: dict[str, dict] = {}
@@ -194,6 +272,7 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "asn": props["asn"],
             "hosting_provider": props["hosting_provider"],
             "ip_country": props["ip_country"],
+            "country_code": props.get("ip_country") or "unknown",
             "ports": sorted(props["ports"]),
         })
 
@@ -204,7 +283,12 @@ def build_nodes(raw: dict) -> dict[str, dict]:
         if user and tid:
             uid = f"{tid}/{user}"
             if uid not in nodes:
-                nodes[uid] = _node(uid, "user", user, {"tenant_id": tid})
+                _uc = user_countries.get(uid, [])
+                _uc_cc = Counter(_uc).most_common(1)[0][0] if _uc else "unknown"
+                nodes[uid] = _node(uid, "user", user, {
+                    "tenant_id": tid,
+                    "country_code": _uc_cc,
+                })
 
     for e in raw["emails"]:
         user = e.get("recipient_user")
@@ -212,49 +296,27 @@ def build_nodes(raw: dict) -> dict[str, dict]:
         if user and tid:
             uid = f"{tid}/{user}"
             if uid not in nodes:
-                nodes[uid] = _node(uid, "user", user, {"tenant_id": tid})
-
-    # --- country nodes ---
-    country_sources: set[str] = set()
-    for h in raw["hosts"]:
-        if h.get("country"):
-            country_sources.add(h["country"])
-    for n in raw["network"]:
-        if n.get("ip_country"):
-            country_sources.add(n["ip_country"])
-    for c in raw["campaigns"]:
-        for cc in c.get("target_countries", []):
-            country_sources.add(cc)
-    for t in raw["tenants"]:
-        for cc in t.get("countries", []):
-            country_sources.add(cc)
-    for cc in country_sources:
-        if cc not in nodes:
-            nodes[cc] = _node(cc, "country", cc, {})
+                _uc = user_countries.get(uid, [])
+                _uc_cc = Counter(_uc).most_common(1)[0][0] if _uc else "unknown"
+                nodes[uid] = _node(uid, "user", user, {
+                    "tenant_id": tid,
+                    "country_code": _uc_cc,
+                })
 
     # --- tenant nodes ---
     for t in raw["tenants"]:
         nid = t["tenant_id"]
+        _tc = t.get("countries", [])
         nodes[nid] = _node(nid, "tenant", t["name"], {
             "tenant_id": nid,
             "name": t["name"],
-            "countries": t.get("countries", []),
+            "countries": _tc,
+            "country_code": _tc[0] if _tc else "unknown",
         })
 
-    # --- campaign nodes ---
-    for c in raw["campaigns"]:
-        nid = c["cluster_id"]
-        label = f"{c['lure_family']} ({c['region_variant']})"
-        nodes[nid] = _node(nid, "campaign", label, {
-            "cluster_id": nid,
-            "region_variant": c.get("region_variant"),
-            "lure_family": c.get("lure_family"),
-            "time_window_start": c.get("time_window_start"),
-            "time_window_end": c.get("time_window_end"),
-            "infra_reuse_cluster": c.get("infra_reuse_cluster"),
-            "sender_domains": c.get("sender_domains", []),
-            "target_countries": c.get("target_countries", []),
-        })
+    # --- campaign data stored as properties on emails, not as separate nodes ---
+    # Campaign info is available via email.campaign_id and campaign metadata
+    # in tenant/email properties
 
     # --- url nodes ---
     for n in raw["network"]:
@@ -268,6 +330,7 @@ def build_nodes(raw: dict) -> dict[str, dict]:
                 "protocol": n.get("protocol"),
                 "port": n.get("port"),
                 "uri_path": n.get("uri_path"),
+                "country_code": n.get("ip_country", "unknown"),
             })
 
     # --- process nodes (from executions) ---
@@ -281,6 +344,7 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "script_interpreter": ex.get("script_interpreter"),
             "behavior_flags": ex.get("behavior_flags", []),
             "timestamp": ex.get("timestamp"),
+            "country_code": ex.get("country", "unknown"),
         })
 
     return nodes
@@ -373,32 +437,19 @@ def build_edges(raw: dict, nodes: dict[str, dict]) -> list[dict]:
         if d and ip:
             _add(d, ip, "resolves_to")
 
-    # 8. host --located_in--> country
-    for h in raw["hosts"]:
-        if h.get("country"):
-            _add(h["device_id"], h["country"], "located_in")
+    # 8. (removed — country is metadata on nodes, not a separate node)
 
     # 9. host --belongs_to--> tenant
     for h in raw["hosts"]:
         if h.get("tenant_id"):
             _add(h["device_id"], h["tenant_id"], "belongs_to")
 
-    # 10. campaign --includes--> email
-    campaign_ids = {c["cluster_id"] for c in raw["campaigns"]}
-    for e in raw["emails"]:
-        cid = e.get("campaign_id")
-        if cid and cid in campaign_ids:
-            _add(cid, e["message_id"], "includes")
+    # 10. (removed — campaign is not a separate node type)
+    # Campaign info is carried as metadata on emails via campaign_id
 
-    # 11. campaign --uses--> domain
-    for c in raw["campaigns"]:
-        for sd in c.get("sender_domains", []):
-            _add(c["cluster_id"], sd, "uses")
+    # 11. (removed — campaign nodes removed)
 
-    # 12. campaign --targets--> country
-    for c in raw["campaigns"]:
-        for cc in c.get("target_countries", []):
-            _add(c["cluster_id"], cc, "targets")
+    # 12. (removed — campaign --targets--> country removed)
 
     # 14. user --uses--> host
     for h in raw["hosts"]:
@@ -476,17 +527,17 @@ def main():
     orphan_sources = {e["source"] for e in edges if e["source"] not in node_ids}
     orphan_targets = {e["target"] for e in edges if e["target"] not in node_ids}
     if orphan_sources or orphan_targets:
-        print(f"\n⚠️  Orphan edge sources: {len(orphan_sources)}")
-        print(f"⚠️  Orphan edge targets: {len(orphan_targets)}")
+        print(f"\n[WARN] Orphan edge sources: {len(orphan_sources)}")
+        print(f"[WARN] Orphan edge targets: {len(orphan_targets)}")
     else:
-        print("\n✅ No orphan edges — all sources and targets exist in nodes")
+        print("\n[OK] No orphan edges -- all sources and targets exist in nodes")
 
     # Verify seed IOC
     seed_sha = raw["seed_ioc"]["sha256"]
     if seed_sha in nodes:
-        print(f"✅ Seed IOC present: {seed_sha[:24]}…")
+        print(f"[OK] Seed IOC present: {seed_sha[:24]}")
     else:
-        print(f"⚠️  Seed IOC missing: {seed_sha[:24]}…")
+        print(f"[WARN] Seed IOC missing: {seed_sha[:24]}")
 
     print(f"\nOutput written to: {out.resolve()}")
 
