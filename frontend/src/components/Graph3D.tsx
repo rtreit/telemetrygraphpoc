@@ -108,25 +108,48 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         .nodeColor((obj) => {
           const node = obj as unknown as GraphNodeObject;
           const hl = highlightNodesRef.current;
-          if (hl && hl.size > 0 && !hl.has(node.id)) {
-            return '#1a1a1a';
-          }
+          const eu = euNodesRef.current;
+          const euActive = Boolean(eu && eu.size > 0);
+          const isEU = Boolean(euActive && eu?.has(node.id));
+          const baseColor = NODE_TYPE_CONFIG[node.type]?.color || '#888888';
+
           if (node.id === selectedNodeIdRef.current) {
             return '#ffffff';
           }
-          // Color by node type (matches legend)
-          return NODE_TYPE_CONFIG[node.type]?.color || '#888888';
+
+          if (hl && hl.size > 0 && !hl.has(node.id)) {
+            return isEU ? 'rgba(34,211,238,0.40)' : 'rgba(45,45,52,0.16)';
+          }
+
+          if (euActive) {
+            return isEU ? baseColor : 'rgba(95,95,108,0.22)';
+          }
+
+          return baseColor;
         })
         .nodeVal((obj) => {
           const node = obj as unknown as GraphNodeObject;
           const baseSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
+          const hl = highlightNodesRef.current;
+          const eu = euNodesRef.current;
+          const euActive = Boolean(eu && eu.size > 0);
+          const isEU = Boolean(euActive && eu?.has(node.id));
+
           if (node.id === selectedNodeIdRef.current) {
             return baseSize * 2;
           }
-          const eu = euNodesRef.current;
-          if (eu && eu.size > 0 && !eu.has(node.id)) {
-            return baseSize * 0.5;
+
+          if (hl && hl.size > 0 && !hl.has(node.id)) {
+            return Math.max(isEU ? baseSize * 0.7 : baseSize * 0.18, 0.8);
           }
+
+          if (euActive) {
+            if (isEU) {
+              return baseSize * 1.45;
+            }
+            return Math.max(baseSize * 0.32, 0.9);
+          }
+
           return baseSize;
         })
         .nodeOpacity(0.9)
@@ -135,27 +158,60 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           const srcId = typeof link.source === 'object' ? link.source.id : link.source;
           const tgtId = typeof link.target === 'object' ? link.target.id : link.target;
           const hl = highlightEdgesRef.current;
+          const eu = euNodesRef.current;
+          const euActive = Boolean(eu && eu.size > 0);
+          const srcEU = Boolean(euActive && eu?.has(srcId));
+          const tgtEU = Boolean(euActive && eu?.has(tgtId));
+          const bothEU = srcEU && tgtEU;
+          const oneEU = srcEU || tgtEU;
+
           if (hl && hl.size > 0) {
             const key = `${srcId}->${tgtId}`;
             const reverseKey = `${tgtId}->${srcId}`;
             if (hl.has(key) || hl.has(reverseKey)) {
-              return 'rgba(255,255,255,0.6)';
+              if (bothEU) return 'rgba(255,64,64,0.96)';
+              if (oneEU) return 'rgba(255,125,90,0.78)';
+              return 'rgba(255,255,255,0.28)';
             }
-            return 'rgba(255,255,255,0.08)';
+            return oneEU ? 'rgba(255,80,80,0.10)' : 'rgba(255,255,255,0.04)';
           }
-          const eu = euNodesRef.current;
-          if (eu && eu.size > 0 && (eu.has(srcId) || eu.has(tgtId))) {
-            return 'rgba(255,80,80,0.7)';
+
+          if (euActive) {
+            if (bothEU) return 'rgba(255,64,64,0.92)';
+            if (oneEU) return 'rgba(255,120,80,0.62)';
+            return 'rgba(120,120,132,0.05)';
           }
+
           return 'rgba(255,255,255,0.35)';
         })
         .linkWidth((link: any) => {
+          const srcId = typeof link.source === 'object' ? link.source.id : link.source;
+          const tgtId = typeof link.target === 'object' ? link.target.id : link.target;
           const hl = highlightEdgesRef.current;
+          const eu = euNodesRef.current;
+          const euActive = Boolean(eu && eu.size > 0);
+          const srcEU = Boolean(euActive && eu?.has(srcId));
+          const tgtEU = Boolean(euActive && eu?.has(tgtId));
+          const bothEU = srcEU && tgtEU;
+          const oneEU = srcEU || tgtEU;
+
           if (hl && hl.size > 0) {
-            const key = `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}`;
-            const reverseKey = `${typeof link.target === 'object' ? link.target.id : link.target}->${typeof link.source === 'object' ? link.source.id : link.source}`;
-            if (hl.has(key) || hl.has(reverseKey)) return 1.5;
+            const key = `${srcId}->${tgtId}`;
+            const reverseKey = `${tgtId}->${srcId}`;
+            if (hl.has(key) || hl.has(reverseKey)) {
+              if (bothEU) return 2.1;
+              if (oneEU) return 1.6;
+              return 1.1;
+            }
+            return oneEU ? 0.35 : 0.2;
           }
+
+          if (euActive) {
+            if (bothEU) return 1.7;
+            if (oneEU) return 1.1;
+            return 0.2;
+          }
+
           return 0.8;
         })
         .linkDirectionalParticles((link: any) => {
@@ -209,16 +265,27 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
 
           if (isEU) {
             const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
-            const ringGeo = new THREE.RingGeometry(nodeSize * 0.9, nodeSize * 1.3, 24);
+            const ringGeo = new THREE.RingGeometry(nodeSize * 1.15, nodeSize * 1.8, 32);
             const ringMat = new THREE.MeshBasicMaterial({
-              color: 0x3b82f6,
+              color: 0x22d3ee,
               side: THREE.DoubleSide,
               transparent: true,
-              opacity: 0.7,
+              opacity: 0.82,
             });
             const ring = new THREE.Mesh(ringGeo, ringMat);
             ring.userData.isEURing = true;
             group.add(ring);
+
+            const outerGeo = new THREE.RingGeometry(nodeSize * 1.95, nodeSize * 2.25, 32);
+            const outerMat = new THREE.MeshBasicMaterial({
+              color: 0x93c5fd,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.38,
+            });
+            const outerRing = new THREE.Mesh(outerGeo, outerMat);
+            outerRing.userData.isEURing = true;
+            group.add(outerRing);
           }
 
           return group;
@@ -285,6 +352,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
       const animate = () => {
         const t = Date.now() * 0.003;
         const pulse = 0.4 + 0.4 * Math.sin(t);
+        const scale = 1 + 0.08 * Math.sin(t);
         const graph = graphRef.current;
         if (graph) {
           const gd = graph.graphData() as unknown as { nodes: GraphNodeObject[] };
@@ -294,6 +362,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
             obj.traverse((child: any) => {
               if (child.userData?.isEURing && child.material) {
                 child.material.opacity = pulse;
+                child.scale.setScalar(scale);
               }
             });
           });

@@ -82,6 +82,11 @@ function App() {
     );
   }, [highlightEU, data]);
 
+  const euMatchPercent = useMemo(() => {
+    if (!data || data.nodes.length === 0 || euNodes.size === 0) return 0;
+    return Math.round((euNodes.size / data.nodes.length) * 100);
+  }, [data, euNodes]);
+
   const highlightEdges = useMemo(() => {
     if (!data || highlightNodes.size === 0) return new Set<string>();
     const edgeKeys = new Set<string>();
@@ -199,14 +204,29 @@ function App() {
             </button>
             <button
               onClick={() => setHighlightEU(!highlightEU)}
-              className={`px-3 py-1.5 rounded-lg text-sm transition ${
+              className={`px-3 py-1.5 rounded-lg text-sm border transition ${
                 highlightEU 
-                  ? 'bg-blue-600 text-white' 
-                  : 'bg-black/60 backdrop-blur-sm text-gray-300 hover:text-white'
+                  ? 'border-cyan-300/70 bg-cyan-500/20 text-cyan-100 shadow-[0_0_25px_rgba(34,211,238,0.18)]'
+                  : 'border-gray-700/60 bg-black/60 backdrop-blur-sm text-gray-300 hover:text-white'
               }`}
+              title="Highlight all EU telemetry nodes"
             >
-              🇪🇺 EU
+              {highlightEU ? `🇪🇺 EU Filter On · ${euNodes.size}` : '🇪🇺 EU Filter'}
             </button>
+            {highlightEU && data && (
+              <div className="rounded-lg border border-cyan-300/60 bg-cyan-500/10 px-3 py-2 shadow-[0_0_30px_rgba(34,211,238,0.12)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-200">
+                  EU filter active
+                </div>
+                <div className="mt-1 text-sm text-white">
+                  {euNodes.size} of {data.nodes.length} nodes matched
+                  <span className="ml-2 text-cyan-300">({euMatchPercent}%)</span>
+                </div>
+                <div className="mt-1 text-[11px] text-cyan-100/80">
+                  EU nodes stay large and vivid. Non-EU nodes fade into the background.
+                </div>
+              </div>
+            )}
             <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm flex items-center gap-3">
               <span><span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}</span>
               <span><span className="text-gray-400">Edges:</span> {data?.edges.length ?? 0}</span>
