@@ -222,9 +222,6 @@ function App() {
                   {euNodes.size} of {data.nodes.length} nodes matched
                   <span className="ml-2 text-cyan-300">({euMatchPercent}%)</span>
                 </div>
-                <div className="mt-1 text-[11px] text-cyan-100/80">
-                  EU nodes stay large and vivid. Non-EU nodes fade into the background.
-                </div>
               </div>
             )}
             <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm flex items-center gap-3">
