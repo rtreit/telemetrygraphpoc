@@ -8,6 +8,10 @@ import { useGraphData } from './hooks/useGraphData';
 import { EU_COUNTRIES, NODE_TYPE_CONFIG } from './config';
 import type { GraphNode } from './types';
 
+const DEFAULT_NODE_COUNT = 150;
+const MIN_NODE_COUNT = 1;
+const MAX_NODE_COUNT = 10000;
+
 function App() {
   const [filters, setFilters] = useState<Record<string, string>>({});
   const { data, loading, error, regenerate } = useGraphData(filters);
@@ -15,20 +19,30 @@ function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [highlightEU, setHighlightEU] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [nodeCount, setNodeCount] = useState(100);
+  const [nodeCountInput, setNodeCountInput] = useState(String(DEFAULT_NODE_COUNT));
   const [labelTypes, setLabelTypes] = useState<Set<string>>(new Set(Object.keys(NODE_TYPE_CONFIG)));
   const [hopCount, setHopCount] = useState(1);
   const graphRef = useRef<Graph3DHandle>(null);
 
+  const normalizeNodeCount = useCallback((value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed)) {
+      return DEFAULT_NODE_COUNT;
+    }
+    return Math.max(MIN_NODE_COUNT, Math.min(MAX_NODE_COUNT, parsed));
+  }, []);
+
   const handleGenerate = useCallback(async () => {
+    const requestedNodeCount = normalizeNodeCount(nodeCountInput);
     setGenerating(true);
     setSelectedNode(null);
+    setNodeCountInput(String(requestedNodeCount));
     try {
-      await regenerate(undefined, nodeCount);
+      await regenerate(undefined, requestedNodeCount);
     } finally {
       setGenerating(false);
     }
-  }, [regenerate, nodeCount]);
+  }, [nodeCountInput, normalizeNodeCount, regenerate]);
 
   const handleToggleLabelType = useCallback((type: string) => {
     setLabelTypes(prev => {
@@ -182,13 +196,20 @@ function App() {
                 {generating ? '⏳ Generating...' : '⚡ Generate'}
               </button>
               <input
-                type="number"
-                min={20}
-                max={10000}
-                value={nodeCount}
-                onChange={e => setNodeCount(Math.max(20, Math.min(10000, parseInt(e.target.value) || 100)))}
-                className="w-20 px-2 py-1.5 rounded-lg text-sm bg-black/60 backdrop-blur-sm text-gray-300 border border-gray-700 focus:border-blue-500 outline-none"
-                title="Node count"
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={nodeCountInput}
+                onChange={e => {
+                  const nextValue = e.target.value;
+                  if (/^\d*$/.test(nextValue)) {
+                    setNodeCountInput(nextValue);
+                  }
+                }}
+                onBlur={() => setNodeCountInput(String(normalizeNodeCount(nodeCountInput)))}
+                className="w-24 px-2 py-1.5 rounded-lg text-sm bg-black/60 backdrop-blur-sm text-gray-300 border border-gray-700 focus:border-blue-500 outline-none"
+                title="Node count (1-10000)"
+                aria-label="Node count"
               />
               <span className="text-xs text-gray-500">nodes</span>
             </div>

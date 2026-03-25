@@ -63,16 +63,18 @@ public class GraphController : ControllerBase
     }
 
     [HttpPost("generate")]
-    public IActionResult Generate([FromQuery] int? seed = null, [FromQuery] int nodes = 100)
+    public IActionResult Generate([FromQuery] int? seed = null, [FromQuery] int nodes = 150)
     {
         var actualSeed = seed ?? Random.Shared.Next(1, 999999);
-        var (newNodes, newEdges) = _generator.Generate(actualSeed, nodes);
+        var actualNodes = Math.Clamp(nodes, 1, 10000);
+        var (newNodes, newEdges) = _generator.Generate(actualSeed, actualNodes);
 
         _graphData.ReplaceData(newNodes, newEdges);
 
         return Ok(new
         {
             seed = actualSeed,
+            requested_nodes = actualNodes,
             total_nodes = newNodes.Count,
             total_edges = newEdges.Count,
         });

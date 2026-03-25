@@ -64,12 +64,13 @@ def load_graph():
 @app.post("/api/generate")
 def generate_campaign(
     seed: Optional[int] = Query(None, description="Random seed (default: random)"),
-    nodes: int = Query(100, description="Target node count"),
+    nodes: int = Query(150, description="Target node count"),
 ):
     actual_seed = seed if seed is not None else stdlib_random.randint(1, 999999)
+    actual_nodes = max(1, min(10000, nodes))
 
     # Generate raw telemetry
-    gen = TelemetryGenerator(seed=actual_seed, nodes=nodes)
+    gen = TelemetryGenerator(seed=actual_seed, nodes=actual_nodes)
     counts = gen.generate_all()
     gen.write(output_dir=DATA_DIR / "raw")
 
@@ -93,6 +94,7 @@ def generate_campaign(
 
     return {
         "seed": actual_seed,
+        "requested_nodes": actual_nodes,
         "total_nodes": len(GRAPH_DATA["nodes"]),
         "total_edges": len(GRAPH_DATA["edges"]),
         "raw_counts": counts,

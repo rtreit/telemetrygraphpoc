@@ -62,7 +62,7 @@ public class CampaignGenerator
     private static readonly string[] CampaignIds =
         ["CAMP-ALPHA", "CAMP-BRAVO", "CAMP-CHARLIE"];
 
-    public (List<GraphNode> Nodes, List<GraphEdge> Edges) Generate(int seed, int nodeCount = 100)
+    public (List<GraphNode> Nodes, List<GraphEdge> Edges) Generate(int seed, int nodeCount = 150)
     {
         var rng = new Random(seed);
         var nodes = new List<GraphNode>();

@@ -27,7 +27,7 @@ export function useGraphData(filters?: Record<string, string>) {
       .finally(() => setLoading(false));
   }, [filterKey, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const regenerate = useCallback(async (seed?: number, nodes: number = 100) => {
+  const regenerate = useCallback(async (seed?: number, nodes: number = 150) => {
     setLoading(true);
     setError(null);
     try {

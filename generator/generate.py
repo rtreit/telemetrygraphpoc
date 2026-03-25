@@ -295,7 +295,7 @@ class TelemetryGenerator:
     follow-on payload.
     """
 
-    def __init__(self, seed: int = 42, nodes: int = 100) -> None:
+    def __init__(self, seed: int = 42, nodes: int = 150) -> None:
         self.seed = seed
         self.nodes = nodes
         self.rng = random.Random(seed)
@@ -773,7 +773,7 @@ def main() -> None:
         description="Generate synthetic malware IOC telemetry data",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
-    parser.add_argument("--nodes", type=int, default=100, help="Target node count (default: 100)")
+    parser.add_argument("--nodes", type=int, default=150, help="Target node count (default: 150)")
     args = parser.parse_args()
 
     gen = TelemetryGenerator(seed=args.seed, nodes=args.nodes)
