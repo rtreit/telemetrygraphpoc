@@ -67,18 +67,20 @@ function App() {
       }
       return connected;
     }
-    if (highlightEU && data) {
-      return new Set(
-        data.nodes
-          .filter(n => {
-            const cc = (n.properties?.country_code || n.properties?.country) as string;
-            return cc && EU_COUNTRIES.has(cc);
-          })
-          .map(n => n.id)
-      );
-    }
     return new Set<string>();
-  }, [selectedNode, data, highlightEU, hopCount]);
+  }, [selectedNode, data, hopCount]);
+
+  const euNodes = useMemo(() => {
+    if (!highlightEU || !data) return new Set<string>();
+    return new Set(
+      data.nodes
+        .filter(n => {
+          const cc = (n.properties?.country_code || n.properties?.country) as string;
+          return cc && EU_COUNTRIES.has(cc);
+        })
+        .map(n => n.id)
+    );
+  }, [highlightEU, data]);
 
   const highlightEdges = useMemo(() => {
     if (!data || highlightNodes.size === 0) return new Set<string>();
@@ -154,6 +156,7 @@ function App() {
             highlightEdges={highlightEdges}
             selectedNodeId={selectedNode?.id}
             labelTypes={labelTypes}
+            euNodes={euNodes}
           />
         )}
 

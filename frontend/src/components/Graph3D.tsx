@@ -1,6 +1,7 @@
 import ForceGraph3D from '3d-force-graph';
 import type { ForceGraph3DInstance } from '3d-force-graph';
 import SpriteText from 'three-spritetext';
+import * as THREE from 'three';
 import { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { NODE_TYPE_CONFIG } from '../config';
 import type { GraphNode, GraphEdge } from '../types';
@@ -14,6 +15,7 @@ interface Graph3DProps {
   highlightEdges?: Set<string>;
   selectedNodeId?: string | null;
   labelTypes?: Set<string>;
+  euNodes?: Set<string>;
 }
 
 export interface Graph3DHandle {
@@ -31,19 +33,22 @@ interface GraphNodeObject {
 }
 
 export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
-  ({ nodes, edges, onNodeClick, onNodeDoubleClick, highlightNodes, highlightEdges, selectedNodeId, labelTypes }, ref) => {
+  ({ nodes, edges, onNodeClick, onNodeDoubleClick, highlightNodes, highlightEdges, selectedNodeId, labelTypes, euNodes }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const graphRef = useRef<ForceGraph3DInstance | null>(null);
     const highlightNodesRef = useRef(highlightNodes);
     const highlightEdgesRef = useRef(highlightEdges);
     const selectedNodeIdRef = useRef(selectedNodeId);
     const labelTypesRef = useRef(labelTypes);
+    const euNodesRef = useRef(euNodes);
+    const animFrameRef = useRef<number>(0);
 
     // Keep refs in sync
     useEffect(() => { highlightNodesRef.current = highlightNodes; }, [highlightNodes]);
     useEffect(() => { highlightEdgesRef.current = highlightEdges; }, [highlightEdges]);
     useEffect(() => { selectedNodeIdRef.current = selectedNodeId; }, [selectedNodeId]);
     useEffect(() => { labelTypesRef.current = labelTypes; }, [labelTypes]);
+    useEffect(() => { euNodesRef.current = euNodes; }, [euNodes]);
 
     useImperativeHandle(ref, () => ({
       focusOnNode: (nodeId: string) => {
@@ -172,19 +177,40 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         .nodeThreeObject((obj) => {
           const node = obj as unknown as GraphNodeObject;
           const lt = labelTypesRef.current;
-          if (!lt || !lt.has(node.type)) return null as any;
-
-          // Hide labels for nodes outside the highlight set (hop range or EU filter)
+          const eu = euNodesRef.current;
           const hl = highlightNodesRef.current;
-          if (hl && hl.size > 0 && !hl.has(node.id)) return null as any;
+          const isEU = eu && eu.size > 0 && eu.has(node.id);
+          const showLabel = lt && lt.has(node.type) && !(hl && hl.size > 0 && !hl.has(node.id));
 
-          const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
-          const sprite = new SpriteText(node.label, 2.5, '#ffffff');
-          sprite.backgroundColor = 'rgba(0,0,0,0.6)';
-          sprite.padding = 1.5;
-          sprite.borderRadius = 2;
-          sprite.position.y = nodeSize + 6;
-          return sprite;
+          if (!showLabel && !isEU) return null as any;
+
+          const group = new THREE.Group();
+
+          if (showLabel) {
+            const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
+            const sprite = new SpriteText(node.label, 2.5, '#ffffff');
+            sprite.backgroundColor = 'rgba(0,0,0,0.6)';
+            sprite.padding = 1.5;
+            sprite.borderRadius = 2;
+            sprite.position.y = nodeSize + 6;
+            group.add(sprite);
+          }
+
+          if (isEU) {
+            const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
+            const ringGeo = new THREE.RingGeometry(nodeSize * 0.9, nodeSize * 1.3, 24);
+            const ringMat = new THREE.MeshBasicMaterial({
+              color: 0x3b82f6,
+              side: THREE.DoubleSide,
+              transparent: true,
+              opacity: 0.7,
+            });
+            const ring = new THREE.Mesh(ringGeo, ringMat);
+            ring.userData.isEURing = true;
+            group.add(ring);
+          }
+
+          return group;
         })
         .linkPositionUpdate((sprite: any, { start, end }: any) => {
           if (!sprite || !start || !end) return false;
@@ -234,11 +260,38 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         graphRef.current.linkColor(graphRef.current.linkColor());
         graphRef.current.linkWidth(graphRef.current.linkWidth());
         graphRef.current.linkDirectionalParticles(graphRef.current.linkDirectionalParticles());
-        // Re-evaluate edge labels when selection changes
         graphRef.current.linkThreeObject(graphRef.current.linkThreeObject());
         graphRef.current.nodeThreeObject(graphRef.current.nodeThreeObject());
       }
-    }, [highlightNodes, highlightEdges, selectedNodeId, labelTypes]);
+    }, [highlightNodes, highlightEdges, selectedNodeId, labelTypes, euNodes]);
+
+    // Pulse animation for EU rings
+    useEffect(() => {
+      if (!euNodes || euNodes.size === 0) {
+        cancelAnimationFrame(animFrameRef.current);
+        return;
+      }
+      const animate = () => {
+        const t = Date.now() * 0.003;
+        const pulse = 0.4 + 0.4 * Math.sin(t);
+        const graph = graphRef.current;
+        if (graph) {
+          const gd = graph.graphData() as unknown as { nodes: GraphNodeObject[] };
+          gd.nodes.forEach(n => {
+            const obj = (n as any).__threeObj;
+            if (!obj) return;
+            obj.traverse((child: any) => {
+              if (child.userData?.isEURing && child.material) {
+                child.material.opacity = pulse;
+              }
+            });
+          });
+        }
+        animFrameRef.current = requestAnimationFrame(animate);
+      };
+      animFrameRef.current = requestAnimationFrame(animate);
+      return () => cancelAnimationFrame(animFrameRef.current);
+    }, [euNodes]);
 
     return <div ref={containerRef} className="w-full h-full" />;
   }
