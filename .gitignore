@@ -92,6 +92,14 @@ graph_output/
 *.swo
 *~
 
+# .NET build output
+publish/
+webapp/wwwroot/
+webapp/bin/
+webapp/obj/
+*.user
+deploy.zip
+
 # OS
 .DS_Store
 Thumbs.db
