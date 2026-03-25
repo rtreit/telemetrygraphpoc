@@ -5,7 +5,7 @@ import { FilterPanel } from './components/FilterPanel';
 import { SearchBar } from './components/SearchBar';
 import { Legend } from './components/Legend';
 import { useGraphData } from './hooks/useGraphData';
-import { EU_COUNTRIES } from './config';
+import { EU_COUNTRIES, NODE_TYPE_CONFIG } from './config';
 import type { GraphNode } from './types';
 
 function App() {
@@ -16,7 +16,7 @@ function App() {
   const [highlightEU, setHighlightEU] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [nodeCount, setNodeCount] = useState(100);
-  const [labelTypes, setLabelTypes] = useState<Set<string>>(new Set(['tenant']));
+  const [labelTypes, setLabelTypes] = useState<Set<string>>(new Set(Object.keys(NODE_TYPE_CONFIG)));
   const [hopCount, setHopCount] = useState(1);
   const graphRef = useRef<Graph3DHandle>(null);
 
@@ -81,16 +81,16 @@ function App() {
   }, [selectedNode, data, highlightEU, hopCount]);
 
   const highlightEdges = useMemo(() => {
-    if (!selectedNode || !data) return new Set<string>();
+    if (!data || highlightNodes.size === 0) return new Set<string>();
     const edgeKeys = new Set<string>();
-    // Highlight edges where BOTH endpoints are in the highlighted neighborhood
+    // Highlight edges where BOTH endpoints are in the highlighted set
     data.edges.forEach(e => {
       if (highlightNodes.has(e.source) && highlightNodes.has(e.target)) {
         edgeKeys.add(`${e.source}->${e.target}`);
       }
     });
     return edgeKeys;
-  }, [selectedNode, data, highlightNodes]);
+  }, [data, highlightNodes]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
     setSelectedNode(prev => prev?.id === node.id ? null : node);

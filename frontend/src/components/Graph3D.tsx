@@ -174,6 +174,10 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           const lt = labelTypesRef.current;
           if (!lt || !lt.has(node.type)) return null as any;
 
+          // Hide labels for nodes outside the highlight set (hop range or EU filter)
+          const hl = highlightNodesRef.current;
+          if (hl && hl.size > 0 && !hl.has(node.id)) return null as any;
+
           const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
           const sprite = new SpriteText(node.label, 2.5, '#ffffff');
           sprite.backgroundColor = 'rgba(0,0,0,0.6)';
