@@ -11,13 +11,13 @@ export const COUNTRY_COLORS: Record<string, string> = {
 export const DEFAULT_COUNTRY_COLOR = '#555555';
 
 export const NODE_TYPE_CONFIG: Record<string, { color: string; shape: string; size: number }> = {
-  file:     { color: '#ff4444', shape: 'sphere', size: 4 },
+  file:     { color: '#ff4444', shape: 'sphere', size: 2 },
   host:     { color: '#4488ff', shape: 'sphere', size: 5 },
   email:    { color: '#ffaa00', shape: 'sphere', size: 3 },
-  domain:   { color: '#00ccaa', shape: 'sphere', size: 6 },
-  ip:       { color: '#aa44ff', shape: 'sphere', size: 5 },
+  domain:   { color: '#00ccaa', shape: 'sphere', size: 7 },
+  ip:       { color: '#aa44ff', shape: 'sphere', size: 6 },
   user:     { color: '#44aaff', shape: 'sphere', size: 3 },
-  tenant:   { color: '#ff6600', shape: 'sphere', size: 7 },
+  tenant:   { color: '#ff6600', shape: 'sphere', size: 8 },
   url:      { color: '#00aacc', shape: 'sphere', size: 3 },
   process:  { color: '#cc4400', shape: 'sphere', size: 3 },
 };

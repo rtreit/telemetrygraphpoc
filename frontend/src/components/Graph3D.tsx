@@ -2,7 +2,7 @@ import ForceGraph3D from '3d-force-graph';
 import type { ForceGraph3DInstance } from '3d-force-graph';
 import SpriteText from 'three-spritetext';
 import { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
-import { COUNTRY_COLORS, NODE_TYPE_CONFIG } from '../config';
+import { NODE_TYPE_CONFIG } from '../config';
 import type { GraphNode, GraphEdge } from '../types';
 
 interface Graph3DProps {
@@ -75,6 +75,20 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
             if (Array.isArray(paths) && paths.length > 0) {
               details += `<br/><span style="color:#999;font-size:11px">${paths[0]}</span>`;
             }
+          } else if (node.type === 'host') {
+            const guid = node.properties?.machine_guid;
+            const os = node.properties?.os_family;
+            const env = node.properties?.environment;
+            if (guid) details += `<br/><span style="color:#ccc">GUID: ${guid}</span>`;
+            if (os) details += `<br/><span style="color:#999">${os}${env ? ' · ' + env : ''}</span>`;
+          } else if (node.type === 'email') {
+            const subject = node.properties?.subject;
+            const sender = node.properties?.sender;
+            if (subject) details += `<br/><span style="color:#ccc">${subject}</span>`;
+            if (sender) details += `<br/><span style="color:#999">from: ${sender}</span>`;
+          } else if (node.type === 'process') {
+            const host = node.properties?.host_device_id;
+            if (host) details += `<br/><span style="color:#999">on: ${host}</span>`;
           }
 
           return `<div style="color:#fff;background:rgba(0,0,0,0.85);padding:6px 10px;border-radius:6px;font-size:12px;max-width:400px;">
@@ -92,11 +106,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           if (node.id === selectedNodeIdRef.current) {
             return '#ffffff';
           }
-          // Color by country_code (all nodes have this now)
-          const countryCode = (node.properties?.country_code || node.properties?.country) as string;
-          if (countryCode && COUNTRY_COLORS[countryCode]) {
-            return COUNTRY_COLORS[countryCode];
-          }
+          // Color by node type (matches legend)
           return NODE_TYPE_CONFIG[node.type]?.color || '#888888';
         })
         .nodeVal((obj) => {
