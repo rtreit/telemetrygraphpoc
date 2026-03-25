@@ -3,8 +3,9 @@ using webapp.Services;
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddControllers();
 
-// Add the graph data service as a singleton
+// Add the graph data service and campaign generator as singletons
 builder.Services.AddSingleton<GraphDataService>();
+builder.Services.AddSingleton<CampaignGenerator>();
 
 var app = builder.Build();
 

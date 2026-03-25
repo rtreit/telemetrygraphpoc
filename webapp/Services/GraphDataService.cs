@@ -238,6 +238,15 @@ public class GraphDataService
         return results;
     }
 
+    public void ReplaceData(List<GraphNode> nodes, List<GraphEdge> edges)
+    {
+        _nodes = nodes;
+        _edges = edges;
+        _nodesById = nodes.ToDictionary(n => n.Id, n => n);
+        _edgesBySource = edges.GroupBy(e => e.Source).ToDictionary(g => g.Key, g => g.ToList());
+        _edgesByTarget = edges.GroupBy(e => e.Target).ToDictionary(g => g.Key, g => g.ToList());
+    }
+
     private static string? GetStringProp(GraphNode node, string key)
     {
         if (node.Properties.TryGetValue(key, out var val) && val.ValueKind == JsonValueKind.String)

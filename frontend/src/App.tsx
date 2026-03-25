@@ -15,17 +15,28 @@ function App() {
   const [showFilters, setShowFilters] = useState(false);
   const [highlightEU, setHighlightEU] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [nodeCount, setNodeCount] = useState(100);
+  const [labelTypes, setLabelTypes] = useState<Set<string>>(new Set(['tenant']));
   const graphRef = useRef<Graph3DHandle>(null);
 
   const handleGenerate = useCallback(async () => {
     setGenerating(true);
     setSelectedNode(null);
     try {
-      await regenerate();
+      await regenerate(undefined, nodeCount);
     } finally {
       setGenerating(false);
     }
-  }, [regenerate]);
+  }, [regenerate, nodeCount]);
+
+  const handleToggleLabelType = useCallback((type: string) => {
+    setLabelTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }, []);
 
   const connectedEdges = useMemo(() => {
     if (!selectedNode || !data) return [];
@@ -129,6 +140,7 @@ function App() {
             highlightNodes={highlightNodes}
             highlightEdges={highlightEdges}
             selectedNodeId={selectedNode?.id}
+            labelTypes={labelTypes}
           />
         )}
 
@@ -136,17 +148,29 @@ function App() {
         <div className="absolute top-4 left-4 right-4 flex items-start justify-between pointer-events-none">
           {/* Left: controls */}
           <div className="flex flex-col gap-2 pointer-events-auto">
-            <button
-              onClick={handleGenerate}
-              disabled={generating}
-              className={`px-3 py-1.5 rounded-lg text-sm transition ${
-                generating
-                  ? 'bg-green-800 text-green-300 cursor-wait'
-                  : 'bg-green-600/80 text-white hover:bg-green-500'
-              }`}
-            >
-              {generating ? '⏳ Generating...' : '⚡ Generate Campaign'}
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleGenerate}
+                disabled={generating}
+                className={`px-3 py-1.5 rounded-lg text-sm transition ${
+                  generating
+                    ? 'bg-green-800 text-green-300 cursor-wait'
+                    : 'bg-green-600/80 text-white hover:bg-green-500'
+                }`}
+              >
+                {generating ? '⏳ Generating...' : '⚡ Generate'}
+              </button>
+              <input
+                type="number"
+                min={20}
+                max={10000}
+                value={nodeCount}
+                onChange={e => setNodeCount(Math.max(20, Math.min(10000, parseInt(e.target.value) || 100)))}
+                className="w-20 px-2 py-1.5 rounded-lg text-sm bg-black/60 backdrop-blur-sm text-gray-300 border border-gray-700 focus:border-blue-500 outline-none"
+                title="Node count"
+              />
+              <span className="text-xs text-gray-500">nodes</span>
+            </div>
             <button
               onClick={() => setShowFilters(!showFilters)}
               className={`px-3 py-1.5 rounded-lg text-sm transition ${
@@ -171,7 +195,7 @@ function App() {
               <span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}
               <span className="text-gray-400 ml-3">Edges:</span> {data?.edges.length ?? 0}
             </div>
-            <Legend />
+            <Legend labelTypes={labelTypes} onToggleLabelType={handleToggleLabelType} />
           </div>
 
           {/* Center: search */}

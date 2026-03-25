@@ -13,6 +13,7 @@ interface Graph3DProps {
   highlightNodes?: Set<string>;
   highlightEdges?: Set<string>;
   selectedNodeId?: string | null;
+  labelTypes?: Set<string>;
 }
 
 export interface Graph3DHandle {
@@ -30,17 +31,19 @@ interface GraphNodeObject {
 }
 
 export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
-  ({ nodes, edges, onNodeClick, onNodeDoubleClick, highlightNodes, highlightEdges, selectedNodeId }, ref) => {
+  ({ nodes, edges, onNodeClick, onNodeDoubleClick, highlightNodes, highlightEdges, selectedNodeId, labelTypes }, ref) => {
     const containerRef = useRef<HTMLDivElement>(null);
     const graphRef = useRef<ForceGraph3DInstance | null>(null);
     const highlightNodesRef = useRef(highlightNodes);
     const highlightEdgesRef = useRef(highlightEdges);
     const selectedNodeIdRef = useRef(selectedNodeId);
+    const labelTypesRef = useRef(labelTypes);
 
     // Keep refs in sync
     useEffect(() => { highlightNodesRef.current = highlightNodes; }, [highlightNodes]);
     useEffect(() => { highlightEdgesRef.current = highlightEdges; }, [highlightEdges]);
     useEffect(() => { selectedNodeIdRef.current = selectedNodeId; }, [selectedNodeId]);
+    useEffect(() => { labelTypesRef.current = labelTypes; }, [labelTypes]);
 
     useImperativeHandle(ref, () => ({
       focusOnNode: (nodeId: string) => {
@@ -165,6 +168,19 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           sprite.borderRadius = 2;
           return sprite;
         })
+        .nodeThreeObjectExtend(true)
+        .nodeThreeObject((obj) => {
+          const node = obj as unknown as GraphNodeObject;
+          const lt = labelTypesRef.current;
+          if (!lt || !lt.has(node.type)) return null as any;
+
+          const sprite = new SpriteText(node.label, 3, '#ffffff');
+          sprite.backgroundColor = 'rgba(0,0,0,0.5)';
+          sprite.padding = 1;
+          sprite.borderRadius = 2;
+          sprite.position.y = 8;
+          return sprite;
+        })
         .linkPositionUpdate((sprite: any, { start, end }: any) => {
           if (!sprite || !start || !end) return false;
           const mid = {
@@ -215,8 +231,9 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         graphRef.current.linkDirectionalParticles(graphRef.current.linkDirectionalParticles());
         // Re-evaluate edge labels when selection changes
         graphRef.current.linkThreeObject(graphRef.current.linkThreeObject());
+        graphRef.current.nodeThreeObject(graphRef.current.nodeThreeObject());
       }
-    }, [highlightNodes, highlightEdges, selectedNodeId]);
+    }, [highlightNodes, highlightEdges, selectedNodeId, labelTypes]);
 
     return <div ref={containerRef} className="w-full h-full" />;
   }

@@ -1,7 +1,12 @@
 import { useState } from 'react';
 import { NODE_TYPE_CONFIG } from '../config';
 
-export function Legend() {
+interface LegendProps {
+  labelTypes?: Set<string>;
+  onToggleLabelType?: (type: string) => void;
+}
+
+export function Legend({ labelTypes, onToggleLabelType }: LegendProps) {
   const [isOpen, setIsOpen] = useState(true);
   
   return (
@@ -18,6 +23,17 @@ export function Legend() {
             <div key={type} className="flex items-center gap-1.5 text-xs">
               <span className="w-2 h-2 rounded-full" style={{ backgroundColor: cfg.color }} />
               <span className="text-gray-400">{type}</span>
+              <button
+                onClick={() => onToggleLabelType?.(type)}
+                className={`ml-auto text-[10px] px-1 rounded ${
+                  labelTypes?.has(type)
+                    ? 'bg-white/20 text-white'
+                    : 'text-gray-600 hover:text-gray-400'
+                }`}
+                title={`Toggle labels for ${type}`}
+              >
+                Aa
+              </button>
             </div>
           ))}
         </div>

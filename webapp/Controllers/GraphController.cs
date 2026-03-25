@@ -8,10 +8,12 @@ namespace webapp.Controllers;
 public class GraphController : ControllerBase
 {
     private readonly GraphDataService _graphData;
+    private readonly CampaignGenerator _generator;
 
-    public GraphController(GraphDataService graphData)
+    public GraphController(GraphDataService graphData, CampaignGenerator generator)
     {
         _graphData = graphData;
+        _generator = generator;
     }
 
     [HttpGet("graph")]
@@ -58,6 +60,22 @@ public class GraphController : ControllerBase
 
         var (nodes, edges) = _graphData.GetNeighbors(nodeId);
         return Ok(new { nodes, edges });
+    }
+
+    [HttpPost("generate")]
+    public IActionResult Generate([FromQuery] int? seed = null, [FromQuery] int nodes = 100)
+    {
+        var actualSeed = seed ?? Random.Shared.Next(1, 999999);
+        var (newNodes, newEdges) = _generator.Generate(actualSeed, nodes);
+
+        _graphData.ReplaceData(newNodes, newEdges);
+
+        return Ok(new
+        {
+            seed = actualSeed,
+            total_nodes = newNodes.Count,
+            total_edges = newEdges.Count,
+        });
     }
 
     [HttpGet("search")]
