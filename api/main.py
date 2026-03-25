@@ -3,6 +3,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from pathlib import Path
 from typing import Optional
 import json
+import random as stdlib_random
+
+from generator.generate import TelemetryGenerator
+from pipeline.build import load_raw, build_nodes, build_edges
 
 app = FastAPI(title="Malware IOC Telemetry Graph API")
 
@@ -55,6 +59,44 @@ def load_graph():
     n_nodes = len(GRAPH_DATA["nodes"])
     n_edges = len(GRAPH_DATA["edges"])
     print(f"Loaded {n_nodes} nodes and {n_edges} edges from {chosen}")
+
+
+@app.post("/api/generate")
+def generate_campaign(
+    seed: Optional[int] = Query(None, description="Random seed (default: random)"),
+    nodes: int = Query(100, description="Target node count"),
+):
+    actual_seed = seed if seed is not None else stdlib_random.randint(1, 999999)
+
+    # Generate raw telemetry
+    gen = TelemetryGenerator(seed=actual_seed, nodes=nodes)
+    counts = gen.generate_all()
+    gen.write(output_dir=DATA_DIR / "raw")
+
+    # Build graph
+    raw = load_raw(DATA_DIR / "raw")
+    node_dict, sha_to_file_nodes = build_nodes(raw)
+    edge_list = build_edges(raw, node_dict, sha_to_file_nodes)
+
+    # Write graph files
+    graph_dir = DATA_DIR / "graph"
+    graph_dir.mkdir(parents=True, exist_ok=True)
+    with open(graph_dir / "nodes.json", "w", encoding="utf-8") as f:
+        json.dump(list(node_dict.values()), f, indent=2, default=str)
+    with open(graph_dir / "edges.json", "w", encoding="utf-8") as f:
+        json.dump(edge_list, f, indent=2, default=str)
+
+    # Reload into memory
+    GRAPH_DATA["nodes"] = list(node_dict.values())
+    GRAPH_DATA["edges"] = edge_list
+    _build_indexes()
+
+    return {
+        "seed": actual_seed,
+        "total_nodes": len(GRAPH_DATA["nodes"]),
+        "total_edges": len(GRAPH_DATA["edges"]),
+        "raw_counts": counts,
+    }
 
 
 @app.get("/api/graph")

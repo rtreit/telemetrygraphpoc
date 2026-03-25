@@ -10,11 +10,22 @@ import type { GraphNode } from './types';
 
 function App() {
   const [filters, setFilters] = useState<Record<string, string>>({});
-  const { data, loading, error } = useGraphData(filters);
+  const { data, loading, error, regenerate } = useGraphData(filters);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showFilters, setShowFilters] = useState(false);
   const [highlightEU, setHighlightEU] = useState(false);
+  const [generating, setGenerating] = useState(false);
   const graphRef = useRef<Graph3DHandle>(null);
+
+  const handleGenerate = useCallback(async () => {
+    setGenerating(true);
+    setSelectedNode(null);
+    try {
+      await regenerate();
+    } finally {
+      setGenerating(false);
+    }
+  }, [regenerate]);
 
   const connectedEdges = useMemo(() => {
     if (!selectedNode || !data) return [];
@@ -125,6 +136,17 @@ function App() {
         <div className="absolute top-4 left-4 right-4 flex items-start justify-between pointer-events-none">
           {/* Left: controls */}
           <div className="flex flex-col gap-2 pointer-events-auto">
+            <button
+              onClick={handleGenerate}
+              disabled={generating}
+              className={`px-3 py-1.5 rounded-lg text-sm transition ${
+                generating
+                  ? 'bg-green-800 text-green-300 cursor-wait'
+                  : 'bg-green-600/80 text-white hover:bg-green-500'
+              }`}
+            >
+              {generating ? '⏳ Generating...' : '⚡ Generate Campaign'}
+            </button>
             <button
               onClick={() => setShowFilters(!showFilters)}
               className={`px-3 py-1.5 rounded-lg text-sm transition ${

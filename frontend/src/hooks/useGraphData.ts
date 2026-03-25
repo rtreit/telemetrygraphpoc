@@ -1,10 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { GraphData } from '../types';
 
 export function useGraphData(filters?: Record<string, string>) {
   const [data, setData] = useState<GraphData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
 
   const filterKey = JSON.stringify(filters);
 
@@ -24,7 +25,27 @@ export function useGraphData(filters?: Record<string, string>) {
       .then((d: GraphData) => { setData(d); setError(null); })
       .catch((e: Error) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [filterKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [filterKey, reloadKey]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  return { data, loading, error };
+  const regenerate = useCallback(async (seed?: number, nodes: number = 100) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams();
+      if (seed !== undefined) params.set('seed', String(seed));
+      params.set('nodes', String(nodes));
+      const qs = params.toString();
+
+      const resp = await fetch(`/api/generate?${qs}`, { method: 'POST' });
+      if (!resp.ok) throw new Error(`Generate failed: ${resp.statusText}`);
+
+      // Trigger reload of graph data
+      setReloadKey(k => k + 1);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Generate failed');
+      setLoading(false);
+    }
+  }, []);
+
+  return { data, loading, error, regenerate };
 }
