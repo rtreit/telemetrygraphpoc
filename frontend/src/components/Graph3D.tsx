@@ -119,22 +119,33 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         })
         .nodeVal((obj) => {
           const node = obj as unknown as GraphNodeObject;
+          const baseSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
           if (node.id === selectedNodeIdRef.current) {
-            return (NODE_TYPE_CONFIG[node.type]?.size || 3) * 2;
+            return baseSize * 2;
           }
-          return NODE_TYPE_CONFIG[node.type]?.size || 3;
+          const eu = euNodesRef.current;
+          if (eu && eu.size > 0 && !eu.has(node.id)) {
+            return baseSize * 0.5;
+          }
+          return baseSize;
         })
         .nodeOpacity(0.9)
         .linkOpacity(1.0)
         .linkColor((link: any) => {
+          const srcId = typeof link.source === 'object' ? link.source.id : link.source;
+          const tgtId = typeof link.target === 'object' ? link.target.id : link.target;
           const hl = highlightEdgesRef.current;
           if (hl && hl.size > 0) {
-            const key = `${typeof link.source === 'object' ? link.source.id : link.source}->${typeof link.target === 'object' ? link.target.id : link.target}`;
-            const reverseKey = `${typeof link.target === 'object' ? link.target.id : link.target}->${typeof link.source === 'object' ? link.source.id : link.source}`;
+            const key = `${srcId}->${tgtId}`;
+            const reverseKey = `${tgtId}->${srcId}`;
             if (hl.has(key) || hl.has(reverseKey)) {
               return 'rgba(255,255,255,0.6)';
             }
             return 'rgba(255,255,255,0.08)';
+          }
+          const eu = euNodesRef.current;
+          if (eu && eu.size > 0 && (eu.has(srcId) || eu.has(tgtId))) {
+            return 'rgba(255,80,80,0.7)';
           }
           return 'rgba(255,255,255,0.35)';
         })
