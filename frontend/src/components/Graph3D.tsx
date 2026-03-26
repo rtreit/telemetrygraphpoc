@@ -1,7 +1,6 @@
 import ForceGraph3D from '3d-force-graph';
 import type { ForceGraph3DInstance } from '3d-force-graph';
 import SpriteText from 'three-spritetext';
-import * as THREE from 'three';
 import { useRef, useEffect, useImperativeHandle, forwardRef } from 'react';
 import { NODE_TYPE_CONFIG } from '../config';
 import type { GraphNode, GraphEdge } from '../types';
@@ -41,7 +40,6 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
     const selectedNodeIdRef = useRef(selectedNodeId);
     const labelTypesRef = useRef(labelTypes);
     const euNodesRef = useRef(euNodes);
-    const animFrameRef = useRef<number>(0);
 
     // Keep refs in sync
     useEffect(() => { highlightNodesRef.current = highlightNodes; }, [highlightNodes]);
@@ -118,7 +116,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           }
 
           if (hl && hl.size > 0 && !hl.has(node.id)) {
-            return isEU ? 'rgba(34,211,238,0.40)' : 'rgba(45,45,52,0.16)';
+            return 'rgba(45,45,52,0.16)';
           }
 
           if (euActive) {
@@ -140,7 +138,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
           }
 
           if (hl && hl.size > 0 && !hl.has(node.id)) {
-            return Math.max(isEU ? baseSize * 0.7 : baseSize * 0.18, 0.8);
+            return Math.max(baseSize * 0.18, 0.8);
           }
 
           if (euActive) {
@@ -173,7 +171,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
               if (oneEU) return 'rgba(255,125,90,0.78)';
               return 'rgba(255,255,255,0.28)';
             }
-            return oneEU ? 'rgba(255,80,80,0.10)' : 'rgba(255,255,255,0.04)';
+            return 'rgba(255,255,255,0.04)';
           }
 
           if (euActive) {
@@ -203,7 +201,7 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
               if (oneEU) return 1.6;
               return 1.1;
             }
-            return oneEU ? 0.35 : 0.2;
+            return 0.2;
           }
 
           if (euActive) {
@@ -244,51 +242,18 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         .nodeThreeObject((obj) => {
           const node = obj as unknown as GraphNodeObject;
           const lt = labelTypesRef.current;
-          const eu = euNodesRef.current;
           const hl = highlightNodesRef.current;
-          const isEU = eu && eu.size > 0 && eu.has(node.id);
           const showLabel = lt && lt.has(node.type) && !(hl && hl.size > 0 && !hl.has(node.id));
 
-          if (!showLabel && !isEU) return null as any;
+          if (!showLabel) return null as any;
 
-          const group = new THREE.Group();
-
-          if (showLabel) {
-            const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
-            const sprite = new SpriteText(node.label, 2.5, '#ffffff');
-            sprite.backgroundColor = 'rgba(0,0,0,0.6)';
-            sprite.padding = 1.5;
-            sprite.borderRadius = 2;
-            sprite.position.y = nodeSize + 6;
-            group.add(sprite);
-          }
-
-          if (isEU) {
-            const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
-            const ringGeo = new THREE.RingGeometry(nodeSize * 1.15, nodeSize * 1.8, 32);
-            const ringMat = new THREE.MeshBasicMaterial({
-              color: 0x22d3ee,
-              side: THREE.DoubleSide,
-              transparent: true,
-              opacity: 0.82,
-            });
-            const ring = new THREE.Mesh(ringGeo, ringMat);
-            ring.userData.isEURing = true;
-            group.add(ring);
-
-            const outerGeo = new THREE.RingGeometry(nodeSize * 1.95, nodeSize * 2.25, 32);
-            const outerMat = new THREE.MeshBasicMaterial({
-              color: 0x93c5fd,
-              side: THREE.DoubleSide,
-              transparent: true,
-              opacity: 0.38,
-            });
-            const outerRing = new THREE.Mesh(outerGeo, outerMat);
-            outerRing.userData.isEURing = true;
-            group.add(outerRing);
-          }
-
-          return group;
+          const nodeSize = NODE_TYPE_CONFIG[node.type]?.size || 3;
+          const sprite = new SpriteText(node.label, 2.5, '#ffffff');
+          sprite.backgroundColor = 'rgba(0,0,0,0.6)';
+          sprite.padding = 1.5;
+          sprite.borderRadius = 2;
+          sprite.position.y = nodeSize + 6;
+          return sprite;
         })
         .linkPositionUpdate((sprite: any, { start, end }: any) => {
           if (!sprite || !start || !end) return false;
@@ -342,36 +307,6 @@ export const Graph3D = forwardRef<Graph3DHandle, Graph3DProps>(
         graphRef.current.nodeThreeObject(graphRef.current.nodeThreeObject());
       }
     }, [highlightNodes, highlightEdges, selectedNodeId, labelTypes, euNodes]);
-
-    // Pulse animation for EU rings
-    useEffect(() => {
-      if (!euNodes || euNodes.size === 0) {
-        cancelAnimationFrame(animFrameRef.current);
-        return;
-      }
-      const animate = () => {
-        const t = Date.now() * 0.003;
-        const pulse = 0.4 + 0.4 * Math.sin(t);
-        const scale = 1 + 0.08 * Math.sin(t);
-        const graph = graphRef.current;
-        if (graph) {
-          const gd = graph.graphData() as unknown as { nodes: GraphNodeObject[] };
-          gd.nodes.forEach(n => {
-            const obj = (n as any).__threeObj;
-            if (!obj) return;
-            obj.traverse((child: any) => {
-              if (child.userData?.isEURing && child.material) {
-                child.material.opacity = pulse;
-                child.scale.setScalar(scale);
-              }
-            });
-          });
-        }
-        animFrameRef.current = requestAnimationFrame(animate);
-      };
-      animFrameRef.current = requestAnimationFrame(animate);
-      return () => cancelAnimationFrame(animFrameRef.current);
-    }, [euNodes]);
 
     return <div ref={containerRef} className="w-full h-full" />;
   }
