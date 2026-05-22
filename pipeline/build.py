@@ -1,13 +1,21 @@
 """
-Graph construction pipeline: transforms raw telemetry JSON into nodes + edges.
+Attack-campaign-oriented graph construction pipeline.
+
+Transforms raw telemetry JSON into an attack-story graph where edges show
+the flow: email → user → host → file → process → domain → ip, etc.
+
+File nodes are per-instance (not deduplicated by SHA-256) to avoid creating
+a dense star pattern around the seed IOC.  Follow-on payload files are the
+exception — they are deduplicated since only a handful of unique hashes exist.
 
 Usage:
     python -m pipeline.build [--input data/raw] [--output data/graph]
 """
 
+import hashlib
 import json
 import argparse
-from collections import defaultdict
+from collections import Counter, defaultdict
 from pathlib import Path
 
 
@@ -49,48 +57,103 @@ def _trunc(s: str, maxlen: int) -> str:
     return s if len(s) <= maxlen else s[: maxlen - 1] + "…"
 
 
+def _path_hash(path: str) -> str:
+    """Short deterministic hash of a file path for use in node IDs."""
+    return hashlib.sha256(path.encode("utf-8")).hexdigest()[:8]
+
+
+def _stable_index(items_len: int, key: str) -> int:
+    """Deterministic index into a list of *items_len* based on *key*."""
+    if items_len <= 0:
+        return 0
+    return int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16) % items_len
+
+
 # ---------------------------------------------------------------------------
 # Node construction
 # ---------------------------------------------------------------------------
 
-def build_nodes(raw: dict) -> dict[str, dict]:
-    """Build a deduplicated node dict keyed by node id."""
+def build_nodes(raw: dict) -> tuple[dict[str, dict], dict[str, list[str]]]:
+    """Build nodes and return ``(nodes_by_id, sha_to_file_node_ids)``.
+
+    ``sha_to_file_node_ids`` maps each SHA-256 to the list of per-instance
+    file node IDs created for that hash — needed by the edge builder to
+    distribute edges across file instances instead of funnelling them all
+    through a single node.
+    """
     nodes: dict[str, dict] = {}
+    seed_sha = raw["seed_ioc"]["sha256"]
 
-    # --- seed IOC (ensure it exists as a file node even if files.json is empty) ---
-    seed = raw["seed_ioc"]
-    # Will be overwritten / merged by the files loop below.
+    # --- Identify follow-on payload SHA-256s (these get deduplicated) ---
+    payload_sha256s: set[str] = set()
+    for ex in raw["executions"]:
+        p = ex.get("follow_on_payload")
+        if p:
+            payload_sha256s.add(p)
 
-    # --- file nodes (deduplicate by sha256, merge names/paths) ---
-    file_agg: dict[str, dict] = defaultdict(lambda: {
-        "file_names": [], "file_paths": [], "file_type": None,
-        "file_sizes": [], "signature_statuses": [],
-        "first_seen": None, "last_seen": None,
-        "parent_processes": [], "dropped_by": set(),
-    })
+    # --- Country lookup tables ---
+    host_by_id = {h["device_id"]: h for h in raw["hosts"]}
+
+    file_host_countries: dict[str, list[str]] = defaultdict(list)
+    for ex in raw["executions"]:
+        sha = ex.get("file_sha256")
+        hid = ex.get("host_device_id")
+        if sha and hid:
+            host = host_by_id.get(hid)
+            country = ex.get("country") or (host.get("country") if host else None)
+            if country:
+                file_host_countries[sha].append(country)
+
+    domain_countries: dict[str, list[str]] = defaultdict(list)
+    for n in raw["network"]:
+        d = n.get("domain")
+        c = n.get("ip_country")
+        if d and c:
+            domain_countries[d].append(c)
+
+    user_countries: dict[str, list[str]] = defaultdict(list)
+    for h in raw["hosts"]:
+        user = h.get("user")
+        tid = h.get("tenant_id")
+        c = h.get("country")
+        if user and tid and c:
+            user_countries[f"{tid}/{user}"].append(c)
+
+    # --- File nodes ---
+    sha_to_file_nodes: dict[str, list[str]] = defaultdict(list)
+
+    # 1. Follow-on payloads — deduplicate by sha256
+    payload_agg: dict[str, dict] = {}
     for f in raw["files"]:
         sha = f["sha256"]
-        agg = file_agg[sha]
+        if sha not in payload_sha256s:
+            continue
+        if sha not in payload_agg:
+            payload_agg[sha] = {
+                "file_names": [], "file_paths": [], "file_type": None,
+                "file_sizes": [], "signature_statuses": [],
+                "first_seen": None, "last_seen": None,
+            }
+        agg = payload_agg[sha]
         if f["file_name"] not in agg["file_names"]:
             agg["file_names"].append(f["file_name"])
         if f["file_path"] not in agg["file_paths"]:
             agg["file_paths"].append(f["file_path"])
         agg["file_type"] = agg["file_type"] or f.get("file_type")
-        agg["file_sizes"].append(f.get("file_size"))
-        agg["signature_statuses"].append(f.get("signature_status"))
-        if f.get("parent_process") and f["parent_process"] not in agg["parent_processes"]:
-            agg["parent_processes"].append(f["parent_process"])
-        if f.get("dropped_by"):
-            agg["dropped_by"].add(f["dropped_by"])
-        fs = f.get("first_seen")
-        ls = f.get("last_seen")
+        if f.get("file_size") is not None:
+            agg["file_sizes"].append(f["file_size"])
+        if f.get("signature_status"):
+            agg["signature_statuses"].append(f["signature_status"])
+        fs, ls = f.get("first_seen"), f.get("last_seen")
         if fs and (agg["first_seen"] is None or fs < agg["first_seen"]):
             agg["first_seen"] = fs
         if ls and (agg["last_seen"] is None or ls > agg["last_seen"]):
             agg["last_seen"] = ls
 
-    for sha, agg in file_agg.items():
+    for sha, agg in payload_agg.items():
         label = agg["file_names"][0] if agg["file_names"] else sha[:16]
+        _fc = file_host_countries.get(sha, [])
+        cc = Counter(_fc).most_common(1)[0][0] if _fc else "unknown"
         nodes[sha] = _node(sha, "file", label, {
             "sha256": sha,
             "file_names": agg["file_names"],
@@ -100,18 +163,63 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "signature_statuses": sorted(set(agg["signature_statuses"])),
             "first_seen": agg["first_seen"],
             "last_seen": agg["last_seen"],
-            "parent_processes": agg["parent_processes"],
-            "dropped_by": sorted(agg["dropped_by"]),
+            "is_payload": True,
+            "country_code": cc,
+        })
+        sha_to_file_nodes[sha].append(sha)
+
+    # Ensure every payload sha256 has a node even if absent from files.json
+    for sha in payload_sha256s:
+        if sha not in nodes:
+            nodes[sha] = _node(sha, "file", sha[:16], {
+                "sha256": sha,
+                "is_payload": True,
+                "country_code": "unknown",
+            })
+            sha_to_file_nodes[sha].append(sha)
+
+    # 2. All other files — one node per unique (sha256, file_path)
+    seen_file_combos: set[tuple[str, str]] = set()
+    for f in raw["files"]:
+        sha = f["sha256"]
+        if sha in payload_sha256s:
+            continue
+        fpath = f.get("file_path", "")
+        combo = (sha, fpath)
+        if combo in seen_file_combos:
+            continue
+        seen_file_combos.add(combo)
+
+        nid = f"file:{sha[:12]}:{_path_hash(fpath)}"
+        sha_to_file_nodes[sha].append(nid)
+
+        _fc = file_host_countries.get(sha, [])
+        cc = Counter(_fc).most_common(1)[0][0] if _fc else "unknown"
+        nodes[nid] = _node(nid, "file", f.get("file_name") or sha[:16], {
+            "sha256": sha,
+            "file_name": f.get("file_name"),
+            "file_path": fpath,
+            "file_type": f.get("file_type"),
+            "file_size": f.get("file_size"),
+            "signature_status": f.get("signature_status"),
+            "first_seen": f.get("first_seen"),
+            "last_seen": f.get("last_seen"),
+            "is_seed_ioc": sha == seed_sha,
+            "country_code": cc,
         })
 
-    # Ensure seed IOC is present even if not in files.json
-    if seed["sha256"] not in nodes:
-        nodes[seed["sha256"]] = _node(
-            seed["sha256"], "file", seed["sha256"][:16],
-            {"sha256": seed["sha256"], "description": seed["description"]},
-        )
+    # Ensure seed IOC has at least one file node
+    if not sha_to_file_nodes.get(seed_sha):
+        nid = f"file:{seed_sha[:12]}:seed"
+        sha_to_file_nodes[seed_sha].append(nid)
+        nodes[nid] = _node(nid, "file", seed_sha[:16], {
+            "sha256": seed_sha,
+            "description": raw["seed_ioc"].get("description", ""),
+            "is_seed_ioc": True,
+            "country_code": "unknown",
+        })
 
-    # --- host nodes ---
+    # --- Host nodes ---
     for h in raw["hosts"]:
         nid = h["device_id"]
         nodes[nid] = _node(nid, "host", h["hostname"], {
@@ -121,14 +229,18 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "device_type": h.get("device_type"),
             "environment": h.get("environment"),
             "country": h.get("country"),
+            "country_code": h.get("country"),
             "tenant_id": h.get("tenant_id"),
             "user": h.get("user"),
             "security_posture": h.get("security_posture"),
+            "machine_guid": h.get("machine_guid"),
         })
 
-    # --- email nodes ---
+    # --- Email nodes ---
+    campaign_lookup = {c["cluster_id"]: c for c in raw.get("campaigns", [])}
     for e in raw["emails"]:
         nid = e["message_id"]
+        ci = campaign_lookup.get(e.get("campaign_id", ""), {})
         nodes[nid] = _node(nid, "email", _trunc(e["subject"], 50), {
             "message_id": nid,
             "sender": e.get("sender"),
@@ -144,37 +256,55 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "dkim": e.get("dkim"),
             "dmarc": e.get("dmarc"),
             "campaign_id": e.get("campaign_id"),
+            "campaign_lure": ci.get("lure_family"),
+            "campaign_region": ci.get("region_variant"),
+            "country_code": e.get("country", "unknown"),
         })
 
-    # --- domain nodes (from network data) ---
-    domain_first_seen: dict[str, str | None] = {}
+    # --- Domain nodes ---
     for n in raw["network"]:
         d = n.get("domain")
-        if not d:
+        if not d or d in nodes:
             continue
-        fs = n.get("first_seen")  # may not exist in data
-        if d not in domain_first_seen or (fs and (domain_first_seen[d] is None or fs < domain_first_seen[d])):
-            domain_first_seen[d] = fs
-        if d not in nodes:
-            nodes[d] = _node(d, "domain", d, {"first_seen": fs})
+        _dc = domain_countries.get(d, [])
+        cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+        nodes[d] = _node(d, "domain", d, {
+            "first_seen": n.get("first_seen"),
+            "countries": sorted(set(_dc)),
+            "country_code": cc,
+        })
 
-    # Also create domain nodes from email sender_domains and campaign sender_domains
     for e in raw["emails"]:
         sd = e.get("sender_domain")
         if sd and sd not in nodes:
-            nodes[sd] = _node(sd, "domain", sd, {})
+            _dc = domain_countries.get(sd, [])
+            cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+            nodes[sd] = _node(sd, "domain", sd, {
+                "countries": sorted(set(_dc)),
+                "country_code": cc,
+            })
+
     for c in raw["campaigns"]:
         for sd in c.get("sender_domains", []):
             if sd not in nodes:
-                nodes[sd] = _node(sd, "domain", sd, {})
+                _dc = domain_countries.get(sd, [])
+                cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+                nodes[sd] = _node(sd, "domain", sd, {
+                    "countries": sorted(set(_dc)),
+                    "country_code": cc,
+                })
 
-    # domains from execution external_connection
     for ex in raw["executions"]:
         ec = ex.get("external_connection")
         if ec and ec not in nodes:
-            nodes[ec] = _node(ec, "domain", ec, {})
+            _dc = domain_countries.get(ec, [])
+            cc = Counter(_dc).most_common(1)[0][0] if _dc else "unknown"
+            nodes[ec] = _node(ec, "domain", ec, {
+                "countries": sorted(set(_dc)),
+                "country_code": cc,
+            })
 
-    # --- ip nodes ---
+    # --- IP nodes ---
     seen_ips: dict[str, dict] = {}
     for n in raw["network"]:
         ip = n.get("ip")
@@ -194,17 +324,23 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "asn": props["asn"],
             "hosting_provider": props["hosting_provider"],
             "ip_country": props["ip_country"],
+            "country_code": props.get("ip_country") or "unknown",
             "ports": sorted(props["ports"]),
         })
 
-    # --- user nodes (from hosts + emails) ---
+    # --- User nodes ---
     for h in raw["hosts"]:
         user = h.get("user")
         tid = h.get("tenant_id")
         if user and tid:
             uid = f"{tid}/{user}"
             if uid not in nodes:
-                nodes[uid] = _node(uid, "user", user, {"tenant_id": tid})
+                _uc = user_countries.get(uid, [])
+                cc = Counter(_uc).most_common(1)[0][0] if _uc else "unknown"
+                nodes[uid] = _node(uid, "user", user, {
+                    "tenant_id": tid,
+                    "country_code": cc,
+                })
 
     for e in raw["emails"]:
         user = e.get("recipient_user")
@@ -212,65 +348,39 @@ def build_nodes(raw: dict) -> dict[str, dict]:
         if user and tid:
             uid = f"{tid}/{user}"
             if uid not in nodes:
-                nodes[uid] = _node(uid, "user", user, {"tenant_id": tid})
+                _uc = user_countries.get(uid, [])
+                cc = Counter(_uc).most_common(1)[0][0] if _uc else "unknown"
+                nodes[uid] = _node(uid, "user", user, {
+                    "tenant_id": tid,
+                    "country_code": cc,
+                })
 
-    # --- country nodes ---
-    country_sources: set[str] = set()
-    for h in raw["hosts"]:
-        if h.get("country"):
-            country_sources.add(h["country"])
-    for n in raw["network"]:
-        if n.get("ip_country"):
-            country_sources.add(n["ip_country"])
-    for c in raw["campaigns"]:
-        for cc in c.get("target_countries", []):
-            country_sources.add(cc)
-    for t in raw["tenants"]:
-        for cc in t.get("countries", []):
-            country_sources.add(cc)
-    for cc in country_sources:
-        if cc not in nodes:
-            nodes[cc] = _node(cc, "country", cc, {})
-
-    # --- tenant nodes ---
+    # --- Tenant nodes ---
     for t in raw["tenants"]:
         nid = t["tenant_id"]
+        _tc = t.get("countries", [])
         nodes[nid] = _node(nid, "tenant", t["name"], {
             "tenant_id": nid,
             "name": t["name"],
-            "countries": t.get("countries", []),
+            "countries": _tc,
+            "country_code": _tc[0] if _tc else "unknown",
         })
 
-    # --- campaign nodes ---
-    for c in raw["campaigns"]:
-        nid = c["cluster_id"]
-        label = f"{c['lure_family']} ({c['region_variant']})"
-        nodes[nid] = _node(nid, "campaign", label, {
-            "cluster_id": nid,
-            "region_variant": c.get("region_variant"),
-            "lure_family": c.get("lure_family"),
-            "time_window_start": c.get("time_window_start"),
-            "time_window_end": c.get("time_window_end"),
-            "infra_reuse_cluster": c.get("infra_reuse_cluster"),
-            "sender_domains": c.get("sender_domains", []),
-            "target_countries": c.get("target_countries", []),
-        })
-
-    # --- url nodes ---
+    # --- URL nodes ---
     for n in raw["network"]:
         url = n.get("url")
-        if not url:
+        if not url or url in nodes:
             continue
-        if url not in nodes:
-            nodes[url] = _node(url, "url", _trunc(url, 80), {
-                "domain": n.get("domain"),
-                "ip": n.get("ip"),
-                "protocol": n.get("protocol"),
-                "port": n.get("port"),
-                "uri_path": n.get("uri_path"),
-            })
+        nodes[url] = _node(url, "url", _trunc(url, 80), {
+            "domain": n.get("domain"),
+            "ip": n.get("ip"),
+            "protocol": n.get("protocol"),
+            "port": n.get("port"),
+            "uri_path": n.get("uri_path"),
+            "country_code": n.get("ip_country", "unknown"),
+        })
 
-    # --- process nodes (from executions) ---
+    # --- Process nodes ---
     for ex in raw["executions"]:
         nid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
         nodes[nid] = _node(nid, "process", ex["process_name"], {
@@ -281,19 +391,42 @@ def build_nodes(raw: dict) -> dict[str, dict]:
             "script_interpreter": ex.get("script_interpreter"),
             "behavior_flags": ex.get("behavior_flags", []),
             "timestamp": ex.get("timestamp"),
+            "country_code": ex.get("country", "unknown"),
         })
 
-    return nodes
+    return nodes, sha_to_file_nodes
 
 
 # ---------------------------------------------------------------------------
 # Edge construction
 # ---------------------------------------------------------------------------
 
-def build_edges(raw: dict, nodes: dict[str, dict]) -> list[dict]:
-    """Build edge list from all defined relationships."""
+def build_edges(raw: dict, nodes: dict[str, dict],
+                sha_to_file_nodes: dict[str, list[str]]) -> list[dict]:
+    """Build attack-campaign-oriented edge list.
+
+    Edge types (attack story flow):
+        delivered_to   email → user
+        contains       email → file  (seed IOC attachment)
+        uses           user → host
+        dropped_on     file → host
+        executes       process → file
+        runs_on        process → host
+        connects_to    process → domain  (C2)
+        downloads      process → file    (follow-on payload)
+        resolves_to    domain → ip
+        belongs_to     host → tenant
+        hosted_on      url → domain
+    """
     edges: list[dict] = []
     seen_edges: set[tuple[str, str, str]] = set()
+    seed_sha = raw["seed_ioc"]["sha256"]
+
+    payload_sha256s: set[str] = set()
+    for ex in raw["executions"]:
+        p = ex.get("follow_on_payload")
+        if p:
+            payload_sha256s.add(p)
 
     def _add(source: str, target: str, etype: str, props: dict | None = None):
         if source not in nodes or target not in nodes:
@@ -303,131 +436,95 @@ def build_edges(raw: dict, nodes: dict[str, dict]) -> list[dict]:
             seen_edges.add(key)
             edges.append(_edge(source, target, etype, props))
 
-    # Build lookup: file_name → set of sha256 (for attachment matching)
-    fname_to_sha: dict[str, set[str]] = defaultdict(set)
-    for f in raw["files"]:
-        fname_to_sha[f["file_name"]].add(f["sha256"])
+    def _pick_file_node(sha: str, distribution_key: str) -> str | None:
+        """Pick one file node for *sha*, distributed by *distribution_key*."""
+        fnodes = sha_to_file_nodes.get(sha)
+        if not fnodes:
+            return None
+        idx = _stable_index(len(fnodes), distribution_key)
+        return fnodes[idx]
 
-    # Build lookup: user → list of host device_ids
-    user_to_hosts: dict[str, list[str]] = defaultdict(list)
-    for h in raw["hosts"]:
-        if h.get("user") and h.get("tenant_id"):
-            uid = f"{h['tenant_id']}/{h['user']}"
-            user_to_hosts[uid].append(h["device_id"])
-
-    # 1. email --delivered_to--> user
+    # 1. email → delivered_to → user
     for e in raw["emails"]:
         user = e.get("recipient_user")
         tid = e.get("recipient_tenant")
         if user and tid:
             _add(e["message_id"], f"{tid}/{user}", "delivered_to")
 
-    # 2. email --contains_attachment--> file
+    # 2. email → contains → file (seed IOC instance, distributed across nodes)
     for e in raw["emails"]:
-        att = e.get("attachment_name")
-        if att and att in fname_to_sha:
-            for sha in fname_to_sha[att]:
-                _add(e["message_id"], sha, "contains_attachment")
+        mid = e["message_id"]
+        fnode = _pick_file_node(seed_sha, mid)
+        if fnode:
+            _add(mid, fnode, "contains")
 
-    # 3. file --dropped_on--> host (via executions)
-    for ex in raw["executions"]:
-        sha = ex.get("file_sha256")
-        hid = ex.get("host_device_id")
-        if sha and hid:
-            _add(sha, hid, "dropped_on")
-
-    # Also: file dropped_on host via email→user→host chain
-    for e in raw["emails"]:
-        att = e.get("attachment_name")
-        user = e.get("recipient_user")
-        tid = e.get("recipient_tenant")
-        if att and user and tid:
-            uid = f"{tid}/{user}"
-            for sha in fname_to_sha.get(att, set()):
-                for hid in user_to_hosts.get(uid, []):
-                    _add(sha, hid, "dropped_on")
-
-    # 4. file --drops--> file (child.dropped_by → parent sha256)
-    for f in raw["files"]:
-        if f.get("dropped_by"):
-            _add(f["dropped_by"], f["sha256"], "drops")
-
-    # 5. process --executes--> file
-    for ex in raw["executions"]:
-        pid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
-        sha = ex.get("file_sha256")
-        if sha:
-            _add(pid, sha, "executes")
-
-    # 6. process --connects_to--> domain
-    for ex in raw["executions"]:
-        pid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
-        ec = ex.get("external_connection")
-        if ec:
-            _add(pid, ec, "connects_to")
-
-    # 7. domain --resolves_to--> ip
-    for n in raw["network"]:
-        d = n.get("domain")
-        ip = n.get("ip")
-        if d and ip:
-            _add(d, ip, "resolves_to")
-
-    # 8. host --located_in--> country
-    for h in raw["hosts"]:
-        if h.get("country"):
-            _add(h["device_id"], h["country"], "located_in")
-
-    # 9. host --belongs_to--> tenant
-    for h in raw["hosts"]:
-        if h.get("tenant_id"):
-            _add(h["device_id"], h["tenant_id"], "belongs_to")
-
-    # 10. campaign --includes--> email
-    campaign_ids = {c["cluster_id"] for c in raw["campaigns"]}
-    for e in raw["emails"]:
-        cid = e.get("campaign_id")
-        if cid and cid in campaign_ids:
-            _add(cid, e["message_id"], "includes")
-
-    # 11. campaign --uses--> domain
-    for c in raw["campaigns"]:
-        for sd in c.get("sender_domains", []):
-            _add(c["cluster_id"], sd, "uses")
-
-    # 12. campaign --targets--> country
-    for c in raw["campaigns"]:
-        for cc in c.get("target_countries", []):
-            _add(c["cluster_id"], cc, "targets")
-
-    # 14. user --uses--> host
+    # 3. user → uses → host
     for h in raw["hosts"]:
         user = h.get("user")
         tid = h.get("tenant_id")
         if user and tid:
-            uid = f"{tid}/{user}"
-            _add(uid, h["device_id"], "uses")
+            _add(f"{tid}/{user}", h["device_id"], "uses")
 
-    # 15. process --runs_on--> host
+    # 4. file → dropped_on → host (from executions)
+    for ex in raw["executions"]:
+        sha = ex.get("file_sha256")
+        hid = ex.get("host_device_id")
+        if not sha or not hid:
+            continue
+        fnode = _pick_file_node(sha, hid)
+        if fnode:
+            _add(fnode, hid, "dropped_on")
+
+    # 5. process → executes → file
+    for ex in raw["executions"]:
+        pid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
+        sha = ex.get("file_sha256")
+        hid = ex.get("host_device_id")
+        if sha:
+            fnode = _pick_file_node(sha, hid or ex["event_id"])
+            if fnode:
+                _add(pid, fnode, "executes")
+
+    # 6. process → runs_on → host
     for ex in raw["executions"]:
         pid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
         hid = ex.get("host_device_id")
         if hid:
             _add(pid, hid, "runs_on")
 
-    # 17. url --hosted_on--> domain
+    # 7. process → connects_to → domain (C2 callback)
+    for ex in raw["executions"]:
+        pid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
+        ec = ex.get("external_connection")
+        if ec:
+            _add(pid, ec, "connects_to")
+
+    # 8. process → downloads → file (follow-on payload)
+    for ex in raw["executions"]:
+        payload = ex.get("follow_on_payload")
+        if not payload:
+            continue
+        pid = f"{ex['host_device_id']}/{ex['process_name']}/{ex['event_id']}"
+        _add(pid, payload, "downloads")
+
+    # 9. domain → resolves_to → ip
+    for n in raw["network"]:
+        d = n.get("domain")
+        ip = n.get("ip")
+        if d and ip:
+            _add(d, ip, "resolves_to")
+
+    # 10. host → belongs_to → tenant
+    for h in raw["hosts"]:
+        if h.get("tenant_id"):
+            _add(h["device_id"], h["tenant_id"], "belongs_to")
+
+    # 11. url → hosted_on → domain
     for n in raw["network"]:
         url = n.get("url")
         d = n.get("domain")
         if url and d:
             _add(url, d, "hosted_on")
-
-    # 18. url --resolves_to--> ip
-    for n in raw["network"]:
-        url = n.get("url")
-        ip = n.get("ip")
-        if url and ip:
-            _add(url, ip, "resolves_to")
 
     return edges
 
@@ -437,14 +534,16 @@ def build_edges(raw: dict, nodes: dict[str, dict]) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def main():
-    parser = argparse.ArgumentParser(description="Build graph from raw telemetry")
+    parser = argparse.ArgumentParser(
+        description="Build attack-campaign graph from raw telemetry",
+    )
     parser.add_argument("--input", default="data/raw", help="Input directory")
     parser.add_argument("--output", default="data/graph", help="Output directory")
     args = parser.parse_args()
 
     raw = load_raw(Path(args.input))
-    nodes = build_nodes(raw)
-    edges = build_edges(raw, nodes)
+    nodes, sha_to_file_nodes = build_nodes(raw)
+    edges = build_edges(raw, nodes, sha_to_file_nodes)
 
     # Write output
     out = Path(args.output)
@@ -455,7 +554,6 @@ def main():
         json.dump(edges, f, indent=2, default=str)
 
     # Print summary
-    from collections import Counter
     node_types = Counter(n["type"] for n in nodes.values())
     edge_types = Counter(e["type"] for e in edges)
 
@@ -476,17 +574,18 @@ def main():
     orphan_sources = {e["source"] for e in edges if e["source"] not in node_ids}
     orphan_targets = {e["target"] for e in edges if e["target"] not in node_ids}
     if orphan_sources or orphan_targets:
-        print(f"\n⚠️  Orphan edge sources: {len(orphan_sources)}")
-        print(f"⚠️  Orphan edge targets: {len(orphan_targets)}")
+        print(f"\n[WARN] Orphan edge sources: {len(orphan_sources)}")
+        print(f"[WARN] Orphan edge targets: {len(orphan_targets)}")
     else:
-        print("\n✅ No orphan edges — all sources and targets exist in nodes")
+        print("\n[OK] No orphan edges -- all sources and targets exist in nodes")
 
     # Verify seed IOC
     seed_sha = raw["seed_ioc"]["sha256"]
-    if seed_sha in nodes:
-        print(f"✅ Seed IOC present: {seed_sha[:24]}…")
+    seed_nodes = sha_to_file_nodes.get(seed_sha, [])
+    if seed_nodes:
+        print(f"[OK] Seed IOC present as {len(seed_nodes)} per-instance file node(s)")
     else:
-        print(f"⚠️  Seed IOC missing: {seed_sha[:24]}…")
+        print(f"[WARN] Seed IOC missing: {seed_sha[:24]}")
 
     print(f"\nOutput written to: {out.resolve()}")
 

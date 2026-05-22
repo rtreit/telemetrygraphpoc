@@ -1,7 +1,11 @@
 """Synthetic telemetry generator for the Global Malware IOC Telemetry Graph POC.
 
+Generates attack-campaign-oriented data where the graph tells a story:
+  Campaign → Email → User → Host → File (seed IOC) → Process → C2 Domain → IP
+                                                        └→ Follow-on Payload
+
 Usage:
-    python -m generator.generate --seed 42 --nodes 5000
+    python -m generator.generate --seed 42 --nodes 100
 """
 
 from __future__ import annotations
@@ -9,9 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import random
-import string
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -240,17 +242,21 @@ BEHAVIOR_FLAGS = [
     "process_injection", "discovery",
 ]
 
-FILE_TYPES_DROPPED = [
-    ("PE32", ".exe"), ("PE32", ".dll"), ("script", ".ps1"),
-    ("script", ".vbs"), ("script", ".bat"), ("script", ".sh"),
-    ("document", ".docm"), ("document", ".xlsx"),
+FOLLOW_ON_PAYLOAD_TEMPLATES = [
+    ("beacon.dll", "PE32"),
+    ("implant.exe", "PE32"),
+    ("recon.ps1", "script"),
+    ("stealer.exe", "PE32"),
+    ("loader.bin", "PE32"),
 ]
 
-BENIGN_NAMES = [
-    "svchost_helper.exe", "update_service.dll", "system_config.ps1",
-    "maintenance.bat", "health_check.vbs", "cleanup_temp.sh",
-    "win_diag.exe", "netmon_svc.dll",
-]
+# Map attachment extension to MalwareFile.file_type
+_ATTACHMENT_EXT_TO_FILE_TYPE: dict[str, str] = {
+    "xlsx": "document",
+    "docm": "document",
+    "zip": "PE32",
+    "iso": "PE32",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -271,7 +277,7 @@ def _make_ip(rng: random.Random) -> str:
     return f"{rng.randint(1,223)}.{rng.randint(0,255)}.{rng.randint(0,255)}.{rng.randint(1,254)}"
 
 
-def _scale(base: int, nodes: int, ref: int = 5000) -> int:
+def _scale(base: int, nodes: int, ref: int = 100) -> int:
     """Scale a count proportionally to --nodes."""
     return max(1, round(base * nodes / ref))
 
@@ -281,25 +287,41 @@ def _scale(base: int, nodes: int, ref: int = 5000) -> int:
 # ---------------------------------------------------------------------------
 
 class TelemetryGenerator:
-    def __init__(self, seed: int = 42, nodes: int = 5000) -> None:
+    """Generates attack-campaign-oriented synthetic telemetry.
+
+    The graph tells a per-host attack story rather than creating a blob of
+    interconnected files.  Every host gets at most one email; ~30 % of
+    hosts execute the dropper; ~10 % of executing hosts download a
+    follow-on payload.
+    """
+
+    def __init__(self, seed: int = 42, nodes: int = 150) -> None:
         self.seed = seed
         self.nodes = nodes
         self.rng = random.Random(seed)
         self.fake = Faker()
         Faker.seed(seed)
 
-        # Derived counts (scaled proportionally)
-        self.n_campaigns = max(3, _scale(4, nodes))
-        self.n_tenants = max(5, _scale(18, nodes))
-        self.n_hosts = _scale(1000, nodes)
-        self.n_domains = _scale(40, nodes)
-        self.n_ips = _scale(50, nodes)
-        self.n_urls = _scale(65, nodes)
+        # --- scaled counts (ref = 100 nodes) --------------------------------
+        self.n_campaigns = max(2, min(6, _scale(3, nodes)))
+        self.n_tenants = max(3, min(len(TENANT_TEMPLATES), _scale(4, nodes)))
+        self.n_hosts = max(5, _scale(18, nodes))
+        # C2 infra scales sub-linearly to stay shared
+        self.n_c2_domains = min(15, max(3, _scale(4, nodes, ref=200)))
+        self.n_c2_ips = min(15, max(3, _scale(4, nodes, ref=200)))
+        self.n_urls = max(5, _scale(8, nodes))
+        self.n_follow_on = min(len(FOLLOW_ON_PAYLOAD_TEMPLATES), max(2, _scale(3, nodes, ref=200)))
 
-        # Seed IOC
+        # Seed IOC — the ONE dropper hash at the centre of the graph
         self.seed_ioc = _sha256_from_seed(f"seed-ioc-{seed}")
 
-        # Storage
+        # Follow-on payload hashes (small, fixed set shared across hosts)
+        self._follow_on_hashes = [
+            _sha256_from_seed(f"payload-{i}-{seed}")
+            for i in range(self.n_follow_on)
+        ]
+
+        # Entity storage
         self.campaigns: list[Campaign] = []
         self.tenants: list[dict] = []
         self.hosts: list[Host] = []
@@ -309,10 +331,11 @@ class TelemetryGenerator:
         self.network: list[NetworkInfra] = []
 
         # Internal lookup structures
-        self._domains: list[str] = []
-        self._ips: list[str] = []
+        self._c2_domains: list[str] = []
+        self._c2_ips: list[str] = []
         self._domain_ip_map: dict[str, str] = {}
         self._campaign_sender_domains: dict[str, list[str]] = {}
+        self._host_email: dict[str, Email] = {}  # device_id → Email
 
     # ----- campaigns --------------------------------------------------------
 
@@ -324,23 +347,32 @@ class TelemetryGenerator:
         used_lures: list[str] = []
 
         for i in range(self.n_campaigns):
-            cluster_id = f"CAMP-{i+1:03d}"
-            variant = self.rng.choice([v for v in REGION_VARIANTS if v not in used_variants] or REGION_VARIANTS)
+            cluster_id = f"CAMP-{i + 1:03d}"
+            variant = self.rng.choice(
+                [v for v in REGION_VARIANTS if v not in used_variants] or REGION_VARIANTS
+            )
             used_variants.append(variant)
-            lure = self.rng.choice([l for l in LURE_FAMILIES if l not in used_lures] or LURE_FAMILIES)
+            lure = self.rng.choice(
+                [l for l in LURE_FAMILIES if l not in used_lures] or LURE_FAMILIES
+            )
             used_lures.append(lure)
 
             offset_days = i * self.rng.randint(2, 5)
             start = base_start + timedelta(days=offset_days)
             end = start + timedelta(days=self.rng.randint(10, 18))
 
-            sender_domains = self.rng.sample(SENDER_DOMAIN_POOL, k=min(self.rng.randint(3, 5), len(SENDER_DOMAIN_POOL)))
+            # Pick sender domains; allow overlap between campaigns for reuse
+            n_senders = min(self.rng.randint(2, 4), len(SENDER_DOMAIN_POOL))
+            sender_domains = self.rng.sample(SENDER_DOMAIN_POOL, k=n_senders)
             self._campaign_sender_domains[cluster_id] = sender_domains
 
             region_key = variant.split("-")[0]
-            target = REGION_TO_COUNTRIES.get(region_key, COUNTRIES[:5])
-            extra = self.rng.sample([c for c in COUNTRIES if c not in target], k=min(3, len(COUNTRIES) - len(target)))
-            target_countries = list(target) + extra
+            target = list(REGION_TO_COUNTRIES.get(region_key, COUNTRIES[:5]))
+            extra = self.rng.sample(
+                [c for c in COUNTRIES if c not in target],
+                k=min(2, len(COUNTRIES) - len(target)),
+            )
+            target_countries = target + extra
 
             self.campaigns.append(Campaign(
                 cluster_id=cluster_id,
@@ -364,16 +396,21 @@ class TelemetryGenerator:
             region_countries = REGION_TO_COUNTRIES.get(region, COUNTRIES[:3])
             n_countries = self.rng.randint(1, min(3, len(region_countries)))
             countries = self.rng.sample(region_countries, k=n_countries)
-            self.tenants.append({"tenant_id": tid, "name": f"{name}-{region}", "countries": countries})
+            self.tenants.append({
+                "tenant_id": tid,
+                "name": f"{name}-{region}",
+                "countries": countries,
+            })
 
     # ----- hosts ------------------------------------------------------------
 
     def _generate_hosts(self) -> None:
         host_counter: dict[str, int] = {}
-        for i in range(self.n_hosts):
+        for _ in range(self.n_hosts):
             country = self.rng.choices(COUNTRIES, weights=WEIGHTS, k=1)[0]
-            tenant = self.rng.choice([t for t in self.tenants if country in t["countries"]]
-                                     or self.tenants)
+            tenant = self.rng.choice(
+                [t for t in self.tenants if country in t["countries"]] or self.tenants
+            )
             os_family = _weighted_choice(self.rng, OS_WEIGHTS)
             dev_type = _weighted_choice(self.rng, DEVICE_TYPES)
             env = _weighted_choice(self.rng, ENVIRONMENTS)
@@ -386,11 +423,13 @@ class TelemetryGenerator:
             hostname = f"{key}-{host_counter[key]:04d}"
 
             device_id = f"dev-{uuid.UUID(int=self.rng.getrandbits(128), version=4)}"
+            machine_guid = str(uuid.UUID(int=self.rng.getrandbits(128), version=4))
             user = self.fake.user_name()
             posture = self.rng.choice(SECURITY_POSTURE_OPTIONS)
 
             self.hosts.append(Host(
                 device_id=device_id,
+                machine_guid=machine_guid,
                 hostname=hostname,
                 os_family=os_family,
                 device_type=dev_type,
@@ -401,24 +440,88 @@ class TelemetryGenerator:
                 security_posture=posture,
             ))
 
+    # ----- emails -----------------------------------------------------------
+
+    def _generate_emails(self) -> None:
+        """One email per host — every host in the graph received a phishing email."""
+        for host in self.hosts:
+            # Pick a campaign whose target countries include this host's country
+            matching = [c for c in self.campaigns if host.country in c.target_countries]
+            campaign = self.rng.choice(matching) if matching else self.rng.choice(self.campaigns)
+
+            sender_domain = self.rng.choice(self._campaign_sender_domains[campaign.cluster_id])
+            sender_user = self.fake.user_name()
+            sender = f"{sender_user}@{sender_domain}"
+
+            lure = campaign.lure_family
+            subj_template = self.rng.choice(SUBJECT_TEMPLATES[lure])
+            num = f"{self.rng.randint(1000, 9999)}"
+            subject = subj_template.format(
+                num=num,
+                date=self.fake.date_between(
+                    start_date=campaign.time_window_start,
+                    end_date=campaign.time_window_end,
+                ).strftime("%Y-%m-%d"),
+                tracking=f"TRK{self.rng.randint(100000, 999999)}",
+                company=self.fake.company(),
+                sender=sender_user,
+                quarter=self.rng.randint(1, 4),
+            )
+
+            att_name_template, att_type = self.rng.choice(ATTACHMENT_TEMPLATES[lure])
+            att_name = att_name_template.format(num=num, quarter=self.rng.randint(1, 4))
+
+            delta = (campaign.time_window_end - campaign.time_window_start).total_seconds()
+            delivery = campaign.time_window_start + timedelta(seconds=self.rng.uniform(0, delta))
+
+            spf = self.rng.choices(["pass", "fail", "none"], weights=[0.60, 0.30, 0.10], k=1)[0]
+            dkim = self.rng.choices(["pass", "fail", "none"], weights=[0.55, 0.35, 0.10], k=1)[0]
+            dmarc = self.rng.choices(["pass", "fail", "none"], weights=[0.50, 0.35, 0.15], k=1)[0]
+
+            message_id = f"<{uuid.UUID(int=self.rng.getrandbits(128), version=4)}@{sender_domain}>"
+
+            reply_to = None
+            if self.rng.random() < 0.3:
+                reply_to = f"{self.fake.user_name()}@{self.rng.choice(SENDER_DOMAIN_POOL)}"
+
+            email = Email(
+                message_id=message_id,
+                sender=sender,
+                sender_domain=sender_domain,
+                reply_to=reply_to,
+                subject=subject,
+                attachment_name=att_name,
+                attachment_type=att_type,
+                delivery_time=delivery,
+                recipient_user=host.user,
+                recipient_tenant=host.tenant_id,
+                country=host.country,
+                spf=spf,
+                dkim=dkim,
+                dmarc=dmarc,
+                campaign_id=campaign.cluster_id,
+            )
+            self.emails.append(email)
+            self._host_email[host.device_id] = email
+
     # ----- network infra ----------------------------------------------------
 
     def _generate_network(self) -> None:
-        all_domains = list(DGA_DOMAINS) + list(TYPOSQUAT_DOMAINS) + list(LEGIT_LOOKING_DOMAINS)
-        self.rng.shuffle(all_domains)
-        self._domains = all_domains[: self.n_domains]
+        """Generate C2 domains, IPs and URL entries (shared across campaigns)."""
+        all_c2 = list(DGA_DOMAINS) + list(TYPOSQUAT_DOMAINS) + list(LEGIT_LOOKING_DOMAINS)
+        self.rng.shuffle(all_c2)
+        self._c2_domains = all_c2[: self.n_c2_domains]
 
-        # Generate IPs
         seen_ips: set[str] = set()
-        while len(self._ips) < self.n_ips:
+        while len(self._c2_ips) < self.n_c2_ips:
             ip = _make_ip(self.rng)
             if ip not in seen_ips:
                 seen_ips.add(ip)
-                self._ips.append(ip)
+                self._c2_ips.append(ip)
 
-        # Map domains -> IPs (some share IPs for infra reuse)
-        for d in self._domains:
-            self._domain_ip_map[d] = self.rng.choice(self._ips)
+        # Map C2 domains → IPs (some share IPs = infrastructure reuse)
+        for d in self._c2_domains:
+            self._domain_ip_map[d] = self.rng.choice(self._c2_ips)
 
         uri_paths = [
             "/update/check", "/api/v2/beacon", "/gate.php", "/submit",
@@ -426,7 +529,8 @@ class TelemetryGenerator:
             "/panel/login", "/drop/stage2", "/health",
         ]
 
-        for d in self._domains:
+        # One base URL per C2 domain
+        for d in self._c2_domains:
             ip = self._domain_ip_map[d]
             protocol = self.rng.choice(["https", "http"])
             port = 443 if protocol == "https" else 80
@@ -449,14 +553,14 @@ class TelemetryGenerator:
                 ip_country=ip_country,
             ))
 
-        # Generate extra URL variants for remaining budget
+        # Extra URL variants on the same C2 domains
         extra_urls = self.n_urls - len(self.network)
         for _ in range(max(0, extra_urls)):
-            d = self.rng.choice(self._domains)
+            d = self.rng.choice(self._c2_domains)
             ip = self._domain_ip_map[d]
             protocol = self.rng.choice(["https", "http"])
             port = 443 if protocol == "https" else 80
-            uri = self.rng.choice(uri_paths) + f"/{self.rng.randint(1,9999)}"
+            uri = self.rng.choice(uri_paths) + f"/{self.rng.randint(1, 9999)}"
             cert = _sha256_from_seed(f"cert-{d}")[:40] if protocol == "https" else None
             ip_country = self.rng.choice(IP_COUNTRIES)
             asn = f"AS{self.rng.randint(10000, 99999)}"
@@ -475,113 +579,58 @@ class TelemetryGenerator:
                 ip_country=ip_country,
             ))
 
-    # ----- emails -----------------------------------------------------------
-
-    def _generate_emails(self) -> None:
-        email_hosts = self.rng.sample(self.hosts, k=int(len(self.hosts) * 0.70))
-
-        for host in email_hosts:
-            campaign = self.rng.choice(self.campaigns)
-            sender_domain = self.rng.choice(self._campaign_sender_domains[campaign.cluster_id])
-            sender_user = self.fake.user_name()
-            sender = f"{sender_user}@{sender_domain}"
-
-            lure = campaign.lure_family
-            templates = SUBJECT_TEMPLATES[lure]
-            subj_template = self.rng.choice(templates)
-            num = f"{self.rng.randint(1000, 9999)}"
-            subject = subj_template.format(
-                num=num,
-                date=self.fake.date_between(start_date=campaign.time_window_start, end_date=campaign.time_window_end).strftime("%Y-%m-%d"),
-                tracking=f"TRK{self.rng.randint(100000, 999999)}",
-                company=self.fake.company(),
-                sender=sender_user,
-                quarter=self.rng.randint(1, 4),
-            )
-
-            att_templates = ATTACHMENT_TEMPLATES[lure]
-            att_name_template, att_type = self.rng.choice(att_templates)
-            att_name = att_name_template.format(num=num, quarter=self.rng.randint(1, 4))
-
-            delta = (campaign.time_window_end - campaign.time_window_start).total_seconds()
-            delivery = campaign.time_window_start + timedelta(seconds=self.rng.uniform(0, delta))
-
-            spf = self.rng.choices(["pass", "fail", "none"], weights=[0.60, 0.30, 0.10], k=1)[0]
-            dkim = self.rng.choices(["pass", "fail", "none"], weights=[0.55, 0.35, 0.10], k=1)[0]
-            dmarc = self.rng.choices(["pass", "fail", "none"], weights=[0.50, 0.35, 0.15], k=1)[0]
-
-            message_id = f"<{uuid.UUID(int=self.rng.getrandbits(128), version=4)}@{sender_domain}>"
-
-            reply_to = None
-            if self.rng.random() < 0.3:
-                reply_to = f"{self.fake.user_name()}@{self.rng.choice(SENDER_DOMAIN_POOL)}"
-
-            self.emails.append(Email(
-                message_id=message_id,
-                sender=sender,
-                sender_domain=sender_domain,
-                reply_to=reply_to,
-                subject=subject,
-                attachment_name=att_name,
-                attachment_type=att_type,
-                delivery_time=delivery,
-                recipient_user=host.user,
-                recipient_tenant=host.tenant_id,
-                spf=spf,
-                dkim=dkim,
-                dmarc=dmarc,
-                campaign_id=campaign.cluster_id,
-            ))
-
     # ----- files ------------------------------------------------------------
 
     def _generate_files(self) -> None:
+        """Generate file entries for the seed IOC dropper and follow-on payloads.
+
+        Dropper: one MalwareFile per host (same sha256, unique file_name/path
+        matching the email attachment so the pipeline creates the
+        email → contains_attachment → file edge).
+
+        Follow-on payloads: a small fixed set of unique sha256 hashes shared
+        across any host that downloads them.
+        """
         base_time = datetime(2024, 10, 5, tzinfo=timezone.utc)
 
-        # Seed IOC dropper — appears on many hosts with different names/paths
-        dropper_names = [
-            "Invoice_2024.exe", "ShippingLabel.exe", "Document_Viewer.exe",
-            "update_svc.exe", "acrobat_reader.exe", "winhelper.exe",
-        ]
-        for host in self.hosts[:min(50, len(self.hosts))]:
-            fname = self.rng.choice(dropper_names)
+        # -- seed IOC dropper instances (one per host) -----------------------
+        for host in self.hosts:
+            email = self._host_email.get(host.device_id)
+            if email is None:
+                continue
+            # file_name = email attachment_name so pipeline can match them
+            fname = email.attachment_name
             fpath = self._os_path(host.os_family, host.user, fname)
+            file_type = _ATTACHMENT_EXT_TO_FILE_TYPE.get(email.attachment_type, "PE32")
             seen = base_time + timedelta(hours=self.rng.randint(0, 72))
             self.files.append(MalwareFile(
                 sha256=self.seed_ioc,
                 file_name=fname,
                 file_path=fpath,
-                file_type="PE32",
+                file_type=file_type,
                 file_size=self.rng.randint(180_000, 350_000),
                 signature_status=self.rng.choice(["unsigned", "invalid", "revoked"]),
                 first_seen=seen,
                 last_seen=seen + timedelta(hours=self.rng.randint(1, 48)),
             ))
 
-        # Additional dropped/related files for executing hosts (~30-40% of hosts)
-        executing_hosts = self.rng.sample(self.hosts, k=int(len(self.hosts) * 0.35))
-        for host in executing_hosts:
-            n_dropped = self.rng.randint(2, 6)
-            for j in range(n_dropped):
-                ft, ext = self.rng.choice(FILE_TYPES_DROPPED)
-                if self.rng.random() < 0.15:
-                    fname = self.rng.choice(BENIGN_NAMES)
-                else:
-                    fname = f"{self.fake.lexify('??????')}{ext}"
-                fpath = self._os_path(host.os_family, host.user, fname)
-                sha = _sha256_from_seed(f"dropped-{host.device_id}-{j}-{self.seed}")
-                seen = base_time + timedelta(hours=self.rng.randint(0, 120))
-                self.files.append(MalwareFile(
-                    sha256=sha,
-                    file_name=fname,
-                    file_path=fpath,
-                    file_type=ft,
-                    file_size=self.rng.randint(5_000, 500_000),
-                    signature_status=self.rng.choice(["unsigned", "invalid"]),
-                    first_seen=seen,
-                    last_seen=seen + timedelta(hours=self.rng.randint(1, 72)),
-                    dropped_by=self.seed_ioc,
-                ))
+        # -- follow-on payload files (small global set) ----------------------
+        templates = list(FOLLOW_ON_PAYLOAD_TEMPLATES)
+        self.rng.shuffle(templates)
+        for i, sha in enumerate(self._follow_on_hashes):
+            pay_name, pay_type = templates[i % len(templates)]
+            seen = base_time + timedelta(hours=self.rng.randint(24, 168))
+            self.files.append(MalwareFile(
+                sha256=sha,
+                file_name=pay_name,
+                file_path=f"C:\\ProgramData\\{pay_name}",
+                file_type=pay_type,
+                file_size=self.rng.randint(20_000, 800_000),
+                signature_status="unsigned",
+                first_seen=seen,
+                last_seen=seen + timedelta(hours=self.rng.randint(1, 72)),
+                dropped_by=self.seed_ioc,
+            ))
 
     def _os_path(self, os_family: str, user: str, fname: str) -> str:
         if os_family == "Windows":
@@ -609,14 +658,18 @@ class TelemetryGenerator:
     # ----- executions -------------------------------------------------------
 
     def _generate_executions(self) -> None:
-        # ~30% of hosts that received the dropper
-        email_host_ids = {e.recipient_user for e in self.emails}
-        candidate_hosts = [h for h in self.hosts if h.user in email_host_ids]
-        executing = self.rng.sample(candidate_hosts, k=max(1, int(len(candidate_hosts) * 0.30)))
+        """~30 % of hosts execute the dropper; ~10 % of those download a follow-on.
 
-        follow_on_hashes = [_sha256_from_seed(f"payload-{i}-{self.seed}") for i in range(10)]
+        Each execution event references the seed IOC sha256 and optionally a
+        C2 domain (external_connection) and a follow-on payload hash.
+        """
+        n_executing = max(1, int(len(self.hosts) * 0.30))
+        executing_hosts = self.rng.sample(self.hosts, k=n_executing)
 
-        for host in executing:
+        # Guarantee at least one follow-on download when there are enough hosts
+        force_follow_on_index = 0 if len(executing_hosts) >= 2 else -1
+
+        for idx, host in enumerate(executing_hosts):
             os_fam = host.os_family
             if os_fam == "Windows":
                 proc = self.rng.choice(PROCESS_NAMES_WINDOWS)
@@ -631,40 +684,30 @@ class TelemetryGenerator:
                 persist = self.rng.choice(PERSISTENCE_MACOS) if self.rng.random() < 0.3 else None
                 interp = self.rng.choice(["bash", "osascript"]) if self.rng.random() < 0.3 else None
 
-            ext_conn = self.rng.choice(self._domains) if self.rng.random() < 0.6 else None
-            payload = self.rng.choice(follow_on_hashes) if self.rng.random() < 0.10 else None
+            # Most executing hosts connect to C2
+            ext_conn = self.rng.choice(self._c2_domains) if self.rng.random() < 0.7 else None
+
+            # ~10 % download a follow-on payload (forced for first host)
+            if idx == force_follow_on_index:
+                payload = self.rng.choice(self._follow_on_hashes)
+            elif self.rng.random() < 0.10 and self._follow_on_hashes:
+                payload = self.rng.choice(self._follow_on_hashes)
+            else:
+                payload = None
 
             n_flags = self.rng.randint(1, 3)
             flags = self.rng.sample(BEHAVIOR_FLAGS, k=min(n_flags, len(BEHAVIOR_FLAGS)))
 
             ts = datetime(2024, 10, 8, tzinfo=timezone.utc) + timedelta(
-                hours=self.rng.randint(0, 14 * 24)
+                hours=self.rng.randint(0, 14 * 24),
             )
 
             eid = f"exec-{uuid.UUID(int=self.rng.getrandbits(128), version=4)}"
 
-            # If there's a follow-on payload, also create a file entry for it
-            if payload:
-                pay_name = self.rng.choice(["stage2.dll", "beacon.exe", "mimikatz.exe",
-                                            "recon.ps1", "loader.sh", "implant.bin"])
-                pay_path = self._os_path(os_fam, host.user, pay_name)
-                seen = ts + timedelta(minutes=self.rng.randint(1, 60))
-                self.files.append(MalwareFile(
-                    sha256=payload,
-                    file_name=pay_name,
-                    file_path=pay_path,
-                    file_type="PE32" if pay_name.endswith((".exe", ".dll", ".bin")) else "script",
-                    file_size=self.rng.randint(20_000, 800_000),
-                    signature_status="unsigned",
-                    first_seen=seen,
-                    last_seen=seen + timedelta(hours=self.rng.randint(1, 24)),
-                    parent_process=proc,
-                    dropped_by=self.seed_ioc,
-                ))
-
             self.executions.append(ExecutionEvent(
                 event_id=eid,
                 host_device_id=host.device_id,
+                country=host.country,
                 file_sha256=self.seed_ioc,
                 process_name=proc,
                 persistence_type=persist,
@@ -682,8 +725,8 @@ class TelemetryGenerator:
         self._generate_campaigns()
         self._generate_tenants()
         self._generate_hosts()
-        self._generate_network()
         self._generate_emails()
+        self._generate_network()
         self._generate_files()
         self._generate_executions()
 
@@ -730,24 +773,26 @@ def main() -> None:
         description="Generate synthetic malware IOC telemetry data",
     )
     parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
-    parser.add_argument("--nodes", type=int, default=5000, help="Target node count (default: 5000)")
+    parser.add_argument("--nodes", type=int, default=150, help="Target node count (default: 150)")
     args = parser.parse_args()
 
     gen = TelemetryGenerator(seed=args.seed, nodes=args.nodes)
     counts = gen.generate_all()
     gen.write()
 
+    unique_file_hashes = len({f.sha256 for f in gen.files})
     total = sum(counts.values())
-    print(f"\n{'='*50}")
+    print(f"\n{'=' * 50}")
     print(f"  Telemetry generated  (seed={args.seed}, target={args.nodes})")
-    print(f"{'='*50}")
+    print(f"{'=' * 50}")
     for entity, count in counts.items():
         print(f"  {entity:<15} {count:>6}")
-    print(f"  {'—'*22}")
+    print(f"  {'—' * 22}")
     print(f"  {'total':<15} {total:>6}")
+    print(f"  unique file hashes:  {unique_file_hashes}")
     print(f"  seed IOC: {gen.seed_ioc[:16]}...")
     print(f"  output:   {OUTPUT_DIR.resolve()}")
-    print(f"{'='*50}\n")
+    print(f"{'=' * 50}\n")
 
 
 if __name__ == "__main__":

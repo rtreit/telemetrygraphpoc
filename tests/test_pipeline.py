@@ -50,7 +50,11 @@ def test_pipeline_builds_graph(tmp_path, monkeypatch):
     node_types = {n["type"] for n in nodes}
     assert "file" in node_types
     assert "host" in node_types
-    assert "campaign" in node_types
+    assert "email" in node_types
+    assert "tenant" in node_types
+    # country and campaign are metadata, not separate node types
+    assert "country" not in node_types
+    assert "campaign" not in node_types
 
 
 def test_pipeline_no_duplicate_nodes(tmp_path, monkeypatch):

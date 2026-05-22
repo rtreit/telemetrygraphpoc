@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+  <!-- Copy data files to output -->
+  <ItemGroup>
+    <None Include="..\data\sample\**" CopyToOutputDirectory="PreserveNewest" LinkBase="data\sample" />
+    <None Include="..\data\graph\**" CopyToOutputDirectory="PreserveNewest" LinkBase="data\graph" Condition="Exists('..\data\graph\nodes.json')" />
+  </ItemGroup>
+
+</Project>

@@ -5,14 +5,53 @@ import { FilterPanel } from './components/FilterPanel';
 import { SearchBar } from './components/SearchBar';
 import { Legend } from './components/Legend';
 import { useGraphData } from './hooks/useGraphData';
+import { EU_COUNTRIES, NODE_TYPE_CONFIG } from './config';
 import type { GraphNode } from './types';
+
+const DEFAULT_NODE_COUNT = 150;
+const MIN_NODE_COUNT = 1;
+const MAX_NODE_COUNT = 10000;
 
 function App() {
   const [filters, setFilters] = useState<Record<string, string>>({});
-  const { data, loading, error } = useGraphData(filters);
+  const { data, loading, error, regenerate } = useGraphData(filters);
   const [selectedNode, setSelectedNode] = useState<GraphNode | null>(null);
   const [showFilters, setShowFilters] = useState(false);
+  const [highlightEU, setHighlightEU] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [nodeCountInput, setNodeCountInput] = useState(String(DEFAULT_NODE_COUNT));
+  const [labelTypes, setLabelTypes] = useState<Set<string>>(new Set(Object.keys(NODE_TYPE_CONFIG)));
+  const [hopCount, setHopCount] = useState(1);
   const graphRef = useRef<Graph3DHandle>(null);
+
+  const normalizeNodeCount = useCallback((value: string) => {
+    const parsed = Number.parseInt(value, 10);
+    if (Number.isNaN(parsed)) {
+      return DEFAULT_NODE_COUNT;
+    }
+    return Math.max(MIN_NODE_COUNT, Math.min(MAX_NODE_COUNT, parsed));
+  }, []);
+
+  const handleGenerate = useCallback(async () => {
+    const requestedNodeCount = normalizeNodeCount(nodeCountInput);
+    setGenerating(true);
+    setSelectedNode(null);
+    setNodeCountInput(String(requestedNodeCount));
+    try {
+      await regenerate(undefined, requestedNodeCount);
+    } finally {
+      setGenerating(false);
+    }
+  }, [nodeCountInput, normalizeNodeCount, regenerate]);
+
+  const handleToggleLabelType = useCallback((type: string) => {
+    setLabelTypes(prev => {
+      const next = new Set(prev);
+      if (next.has(type)) next.delete(type);
+      else next.add(type);
+      return next;
+    });
+  }, []);
 
   const connectedEdges = useMemo(() => {
     if (!selectedNode || !data) return [];
@@ -22,25 +61,57 @@ function App() {
   }, [selectedNode, data]);
 
   const highlightNodes = useMemo(() => {
-    if (!selectedNode || !data) return new Set<string>();
-    const connected = new Set<string>([selectedNode.id]);
-    data.edges.forEach(e => {
-      if (e.source === selectedNode.id) connected.add(e.target);
-      if (e.target === selectedNode.id) connected.add(e.source);
-    });
-    return connected;
-  }, [selectedNode, data]);
+    if (selectedNode && data) {
+      // Multi-hop BFS from selected node
+      const connected = new Set<string>([selectedNode.id]);
+      let frontier = new Set<string>([selectedNode.id]);
+      for (let hop = 0; hop < hopCount; hop++) {
+        const nextFrontier = new Set<string>();
+        data.edges.forEach(e => {
+          if (frontier.has(e.source) && !connected.has(e.target)) {
+            nextFrontier.add(e.target);
+            connected.add(e.target);
+          }
+          if (frontier.has(e.target) && !connected.has(e.source)) {
+            nextFrontier.add(e.source);
+            connected.add(e.source);
+          }
+        });
+        frontier = nextFrontier;
+      }
+      return connected;
+    }
+    return new Set<string>();
+  }, [selectedNode, data, hopCount]);
+
+  const euNodes = useMemo(() => {
+    if (!highlightEU || !data) return new Set<string>();
+    return new Set(
+      data.nodes
+        .filter(n => {
+          const cc = (n.properties?.country_code || n.properties?.country) as string;
+          return cc && EU_COUNTRIES.has(cc);
+        })
+        .map(n => n.id)
+    );
+  }, [highlightEU, data]);
+
+  const euMatchPercent = useMemo(() => {
+    if (!data || data.nodes.length === 0 || euNodes.size === 0) return 0;
+    return Math.round((euNodes.size / data.nodes.length) * 100);
+  }, [data, euNodes]);
 
   const highlightEdges = useMemo(() => {
-    if (!selectedNode || !data) return new Set<string>();
+    if (!data || highlightNodes.size === 0) return new Set<string>();
     const edgeKeys = new Set<string>();
+    // Highlight edges where BOTH endpoints are in the highlighted set
     data.edges.forEach(e => {
-      if (e.source === selectedNode.id || e.target === selectedNode.id) {
+      if (highlightNodes.has(e.source) && highlightNodes.has(e.target)) {
         edgeKeys.add(`${e.source}->${e.target}`);
       }
     });
     return edgeKeys;
-  }, [selectedNode, data]);
+  }, [data, highlightNodes]);
 
   const handleNodeClick = useCallback((node: GraphNode) => {
     setSelectedNode(prev => prev?.id === node.id ? null : node);
@@ -103,6 +174,8 @@ function App() {
             highlightNodes={highlightNodes}
             highlightEdges={highlightEdges}
             selectedNodeId={selectedNode?.id}
+            labelTypes={labelTypes}
+            euNodes={euNodes}
           />
         )}
 
@@ -110,6 +183,36 @@ function App() {
         <div className="absolute top-4 left-4 right-4 flex items-start justify-between pointer-events-none">
           {/* Left: controls */}
           <div className="flex flex-col gap-2 pointer-events-auto">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={handleGenerate}
+                disabled={generating}
+                className={`px-3 py-1.5 rounded-lg text-sm transition ${
+                  generating
+                    ? 'bg-green-800 text-green-300 cursor-wait'
+                    : 'bg-green-600/80 text-white hover:bg-green-500'
+                }`}
+              >
+                {generating ? '⏳ Generating...' : '⚡ Generate'}
+              </button>
+              <input
+                type="text"
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={nodeCountInput}
+                onChange={e => {
+                  const nextValue = e.target.value;
+                  if (/^\d*$/.test(nextValue)) {
+                    setNodeCountInput(nextValue);
+                  }
+                }}
+                onBlur={() => setNodeCountInput(String(normalizeNodeCount(nodeCountInput)))}
+                className="w-24 px-2 py-1.5 rounded-lg text-sm bg-black/60 backdrop-blur-sm text-gray-300 border border-gray-700 focus:border-blue-500 outline-none"
+                title="Node count (1-10000)"
+                aria-label="Node count"
+              />
+              <span className="text-xs text-gray-500">nodes</span>
+            </div>
             <button
               onClick={() => setShowFilters(!showFilters)}
               className={`px-3 py-1.5 rounded-lg text-sm transition ${
@@ -120,11 +223,49 @@ function App() {
             >
               ☰ Filters
             </button>
-            <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm">
-              <span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}
-              <span className="text-gray-400 ml-3">Edges:</span> {data?.edges.length ?? 0}
+            <button
+              onClick={() => setHighlightEU(!highlightEU)}
+              className={`px-3 py-1.5 rounded-lg text-sm border transition ${
+                highlightEU 
+                  ? 'border-cyan-300/70 bg-cyan-500/20 text-cyan-100 shadow-[0_0_25px_rgba(34,211,238,0.18)]'
+                  : 'border-gray-700/60 bg-black/60 backdrop-blur-sm text-gray-300 hover:text-white'
+              }`}
+              title="Highlight all EU telemetry nodes"
+            >
+              {highlightEU ? `🇪🇺 EU Filter On · ${euNodes.size}` : '🇪🇺 EU Filter'}
+            </button>
+            {highlightEU && data && (
+              <div className="rounded-lg border border-cyan-300/60 bg-cyan-500/10 px-3 py-2 shadow-[0_0_30px_rgba(34,211,238,0.12)]">
+                <div className="text-[11px] font-semibold uppercase tracking-[0.16em] text-cyan-200">
+                  EU filter active
+                </div>
+                <div className="mt-1 text-sm text-white">
+                  {euNodes.size} of {data.nodes.length} nodes matched
+                  <span className="ml-2 text-cyan-300">({euMatchPercent}%)</span>
+                </div>
+              </div>
+            )}
+            <div className="bg-black/60 backdrop-blur-sm rounded-lg px-3 py-1.5 text-sm flex items-center gap-3">
+              <span><span className="text-gray-400">Nodes:</span> {data?.nodes.length ?? 0}</span>
+              <span><span className="text-gray-400">Edges:</span> {data?.edges.length ?? 0}</span>
+              <span className="border-l border-gray-700 pl-3 flex items-center gap-1">
+                <span className="text-gray-400">Hops:</span>
+                {[1,2,3,4].map(h => (
+                  <button
+                    key={h}
+                    onClick={() => setHopCount(h)}
+                    className={`w-6 h-6 rounded text-xs font-mono transition ${
+                      hopCount === h
+                        ? 'bg-blue-600 text-white'
+                        : 'text-gray-500 hover:text-gray-300 hover:bg-white/10'
+                    }`}
+                  >
+                    {h}
+                  </button>
+                ))}
+              </span>
             </div>
-            <Legend />
+            <Legend labelTypes={labelTypes} onToggleLabelType={handleToggleLabelType} />
           </div>
 
           {/* Center: search */}
